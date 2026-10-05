@@ -653,4 +653,212 @@ document.querySelectorAll('.bottomnav button').forEach(b => { b.onclick = () => 
 function openProject(id) {
   cur = projects.find(p => p.id === id); if (!cur) return;
   ensureGit(cur);
-  showView('project'); h
+  showView('project'); history.pushState({ p: 1 }, '');
+  $('#nameInput').value = cur.name;
+  const first = cur.files['index.html'] != null ? 'index.html' : Object.keys(cur.files)[0];
+  openFile(first, true); renderFiles(); clearConsole(); dirty = true; updateUrl();
+  setPane(isWide() ? 'code' : 'files'); if (isWide()) renderNow();
+}
+function openFile(n, stay) {
+  curFile = n; Ed.load(cur.files[n], n); $('#curFile').textContent = n; renderFiles();
+  if (!stay && !isWide()) setPane('code');
+}
+Ed.onChange = v => {
+  if (!cur) return;
+  cur.files[curFile] = v; dirty = true; touch(); scheduleRender();
+  clearTimeout(filesT); filesT = setTimeout(renderFiles, 350);
+};
+function touch() {
+  cur.updated = Date.now(); $('#saveState').textContent = 'Збереження…';
+  clearTimeout(saveT); saveT = setTimeout(() => { $('#saveState').textContent = persist() ? 'Збережено' : 'Не вдалося зберегти'; }, 500);
+}
+function renderFiles() {
+  if (!cur) return;
+  const ch = changes(cur), tg = {}; ch.forEach(c => { tg[c.n] = c.t; });
+  const head = cur.commits[0];
+  $('#commitBar').replaceChildren(
+    h('span', { class: 'muted', html: ic('commit') }), h('span', { class: 'msg' }, head.msg),
+    h('code', { class: 'h' }, head.id), h('span', { class: 'muted sm' }, ago(head.t)));
+  $('#commitCountTxt').textContent = cur.commits.length + (ch.length ? ' · ' + ch.length + ' змін' : '');
+  const ul = $('#fileList'); ul.replaceChildren();
+  Object.keys(cur.files).forEach(n => {
+    ul.append(h('li', { class: n === curFile ? 'active' : '', onclick: () => openFile(n) },
+      h('span', { class: 'muted', html: ic('file') }),
+      h('div', { class: 'meta' }, h('div', { class: 'nm', style: 'color:var(--fg);font-weight:500' }, n)),
+      tg[n] ? h('span', { class: 'tag ' + tg[n], style: 'margin:0' }, tg[n]) : null,
+      h('button', { class: 'icon', 'aria-label': 'Перейменувати', html: ic('pen'), onclick: e => { e.stopPropagation(); renameFile(n); } }),
+      h('button', { class: 'icon', 'aria-label': 'Видалити', html: ic('trash'), onclick: e => { e.stopPropagation(); deleteFile(n); } })));
+  });
+}
+const cleanName = v => (v || '').trim().replace(/\s+/g, '-').replace(/[\\/]/g, '');
+$('#addFile').onclick = async () => {
+  const n = cleanName(await ask('Назва нового файлу', '', 'Створити', 'about.html, app.js, style.css'));
+  if (!n) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  cur.files[n] = ''; touch(); dirty = true; openFile(n);
+};
+async function renameFile(old) {
+  const n = cleanName(await ask('Нова назва файлу', old, 'Зберегти'));
+  if (!n || n === old) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  const nf = {}; Object.keys(cur.files).forEach(k => { nf[k === old ? n : k] = cur.files[k]; });
+  cur.files = nf; if (curFile === old) { curFile = n; Ed.load(cur.files[n], n); $('#curFile').textContent = n; }
+  touch(); renderFiles(); dirty = true; scheduleRender();
+}
+async function deleteFile(n) {
+  if (Object.keys(cur.files).length < 2) return toast('Має лишитися хоча б один файл');
+  if (!(await confirmBox('Видалити «' + n + '»?', 'Файл можна повернути, відновивши попередній коміт.', 'Видалити', true))) return;
+  delete cur.files[n];
+  if (curFile === n) openFile(Object.keys(cur.files)[0], true);
+  touch(); renderFiles(); dirty = true; scheduleRender();
+}
+$('#nameInput').addEventListener('input', e => { cur.name = e.target.value; touch(); updateUrl(); });
+function goHome() { cur = null; showView('home'); renderHome(); }
+$('#back').onclick = () => { goHome(); if (history.state && history.state.p) history.back(); };
+
+/* ================= перегляд ================= */
+let renderT, errs = 0;
+function updateUrl() { if (cur) $('#urlText').textContent = slug(title(cur)) + '/index.html'; }
+function scheduleRender() { clearTimeout(renderT); renderT = setTimeout(() => { if (isWide() || $('#workspace').dataset.pane === 'preview') renderNow(); }, 450); }
+function renderNow() { if (!cur) return; dirty = false; clearConsole(); setFrame('frame', buildDoc(cur.files, { console: true })); }
+$('#reload').onclick = renderNow;
+$('#openTab').onclick = () => {
+  const url = URL.createObjectURL(new Blob([buildDoc(cur.files, { console: false })], { type: 'text/html' }));
+  const w = window.open(url, '_blank'); if (!w) toast('Браузер заблокував вікно — дозвольте спливні вікна');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+function clearConsole() { errs = 0; $('#conLines').replaceChildren(); $('#conCount').hidden = true; }
+$('#conBtn').onclick = () => { const c = $('#console'); c.hidden = !c.hidden; };
+$('#conClear').onclick = clearConsole;
+addEventListener('message', e => {
+  const d = e.data; if (!d || !d.clx || e.source !== $('#frame').contentWindow) return;
+  $('#conLines').append(h('div', { class: d.t }, d.a.join(' ')));
+  if (d.t === 'error') { errs++; $('#conCount').textContent = errs; $('#conCount').hidden = false; }
+  const l = $('#conLines'); l.scrollTop = l.scrollHeight;
+});
+
+/* ================= коміти (як GitHub) ================= */
+function openCommits() {
+  const ch = changes(cur), dm = defaultMsg(ch);
+  const msg = h('input', { class: 'inp', placeholder: dm || 'Опис коміту', maxlength: '80', autocomplete: 'off' });
+  const doCommit = () => {
+    const c = commit(cur, msg.value.trim() || dm);
+    if (c) { toast('Коміт ' + c.id + ' створено'); renderFiles(); openCommits(); }
+  };
+  const list = h('div', {});
+  cur.commits.forEach((c, i) => {
+    list.append(h('div', { class: 'item' },
+      h('span', { class: 'muted', html: ic('commit') }),
+      h('div', { class: 'meta' }, h('div', { class: 't' }, c.msg),
+        h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, c.id), ' · ' + ago(c.t) + (i === 0 ? ' · HEAD' : '')])),
+      i === 0 && !ch.length ? null : h('button', { class: 'btn sm', onclick: async () => {
+        if (!(await confirmBox('Відновити коміт ' + c.id + '?', 'Поточні файли буде замінено файлами з цього коміту. Незакомічені зміни зникнуть.', 'Відновити'))) return;
+        cur.files = Object.assign({}, c.files); touch(); dirty = true;
+        openFile(cur.files[curFile] != null ? curFile : Object.keys(cur.files)[0], true); renderFiles(); scheduleRender(); toast('Відновлено ' + c.id);
+      } }, 'Відновити')));
+  });
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('commit') }), 'Коміти']),
+    h('label', {}, ch.length ? 'Змінені файли' : 'Зміни'),
+    ch.length ? h('div', {}, ch.map(c => h('div', { class: 'sm', style: 'padding:2px 0' }, [h('span', { class: 'tag ' + c.t }, c.t), c.n])))
+              : h('p', { class: 'muted sm' }, 'Немає незакомічених змін.'),
+    h('label', {}, 'Опис коміту'), msg,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: !ch.length, onclick: doCommit }, 'Закомітити зміни')),
+    h('h4', {}, 'Історія (' + cur.commits.length + ')'), list));
+}
+$('#commitsBtn').onclick = openCommits; $('#commitCount').onclick = openCommits;
+
+/* ================= деплой (як Render) ================= */
+let deploying = false;
+function openDeploy() {
+  const p = cur, root = h('div', {});
+  const nameInp = h('input', { class: 'inp', value: p.name, maxlength: '60', placeholder: 'Назва сайту', autocomplete: 'off' });
+  const urlInp = h('input', { class: 'inp mono', readonly: true, style: 'font-size:12px', placeholder: 'Посилання з’явиться після першого деплою', onfocus: e => e.target.select() });
+  const openA = h('a', { class: 'btn', target: '_blank', rel: 'noopener' }, 'Відкрити');
+  const pillBox = h('span', {}), listBox = h('div', {}), term = h('div', { class: 'term', hidden: true });
+  const deployBtn = h('button', { class: 'btn primary wide', onclick: run }, [h('span', { html: ic('up') }), 'Деплой']);
+  const copyBtn = h('button', { class: 'btn', onclick: () => urlInp.value && copyText(urlInp.value, urlInp) }, 'Копіювати');
+  const dlBtn = h('button', { class: 'btn', onclick: () => {
+    const d = p.deploys[0], c = d && findCommit(p, d.commit); download(c ? c.files : p.files, title(p));
+  } }, 'Завантажити .html');
+  const shareBtn = navigator.share ? h('button', { class: 'btn', onclick: () => urlInp.value && navigator.share({ title: title(p), url: urlInp.value }).catch(() => {}) }, 'Надіслати') : null;
+  let tk = 0;
+  function pill(kind, text) { pillBox.replaceChildren(h('span', { class: 'pill ' + kind }, [h('span', { class: 'dot' }), text])); }
+  async function refresh() {
+    const my = ++tk, live = p.deploys[0];
+    if (!deploying) pill(live ? 'live' : '', live ? 'Live · ' + ago(live.t) : 'Не опубліковано');
+    const ch = changes(p);
+    deployBtn.lastChild.textContent = ch.length ? 'Закомітити й задеплоїти (' + ch.length + ')' : 'Задеплоїти останній коміт';
+    listBox.replaceChildren();
+    const rows = p.deploys.slice(0, 5);
+    const links = await Promise.all(rows.map(d => { const c = findCommit(p, d.commit); return c ? makeLink(c.files, title(p)) : Promise.resolve(''); }));
+    if (my !== tk) return;
+    if (links[0]) { urlInp.value = links[0]; openA.href = links[0]; } else { urlInp.value = ''; openA.removeAttribute('href'); }
+    [copyBtn, dlBtn, shareBtn].forEach(b => { if (b) b.toggleAttribute('disabled', !links[0]); });
+    openA.style.opacity = links[0] ? '' : '.5'; openA.style.pointerEvents = links[0] ? '' : 'none';
+    rows.forEach((d, i) => {
+      const c = findCommit(p, d.commit);
+      listBox.append(h('div', { class: 'item' },
+        h('span', { class: 'pill ' + (i === 0 ? 'live' : '') }, [h('span', { class: 'dot' }), i === 0 ? 'Live' : 'Старий']),
+        h('div', { class: 'meta' }, h('div', { class: 't' }, c ? c.msg : '—'),
+          h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, d.commit), ' · ' + ago(d.t)])),
+        links[i] ? h('a', { class: 'btn sm', href: links[i], target: '_blank', rel: 'noopener' }, 'Відкрити') : null));
+    });
+    if (!rows.length) listBox.append(h('p', { class: 'muted sm' }, 'Деплоїв ще не було.'));
+  }
+  async function run() {
+    if (deploying) return; deploying = true; deployBtn.setAttribute('disabled', ''); term.hidden = false; term.replaceChildren(); pill('build', 'Deploying…');
+    const log = (t, cls) => { term.append(h('div', {}, [h('span', { class: 'arrow' }, cls ? '' : '==> '), h('span', { class: cls || '' }, t)])); term.scrollTop = term.scrollHeight; };
+    try {
+      await wait(350);
+      const ch = changes(p);
+      if (ch.length) { const c = commit(p, 'Deploy: ' + defaultMsg(ch)); log('Закомічено зміни (' + ch.length + '): ' + c.id); renderFiles(); await wait(350); }
+      const head = p.commits[0];
+      log('Деплой коміту ' + head.id + ' — ' + head.msg); await wait(450);
+      log('Збираємо файли проєкту (' + Object.keys(head.files).length + ')'); await wait(450);
+      log('Команда збірки не потрібна — статичний сайт'); await wait(400);
+      const link = await makeLink(head.files, title(p));
+      log('Створюємо посилання (' + link.length + ' символів)'); await wait(450);
+      p.deploys.unshift({ id: rid(), commit: head.id, t: Date.now() }); p.deploys = p.deploys.slice(0, 20); p.updated = Date.now(); persist();
+      log('Сайт активний. Деплой завершено.'); deploying = false; pill('live', 'Live · щойно');
+    } catch (e) { deploying = false; pill('fail', 'Помилка'); log(String(e && e.message || e), 'err'); }
+    deployBtn.removeAttribute('disabled'); refresh();
+  }
+  nameInp.addEventListener('input', () => { p.name = nameInp.value; $('#nameInput').value = nameInp.value; touch(); updateUrl(); clearTimeout(nameInp._t); nameInp._t = setTimeout(refresh, 250); });
+  root.append(
+    h('h3', {}, [h('span', { html: ic('up') }), 'Деплой', h('span', { class: 'pill' }, 'Static Site')]),
+    h('div', { style: 'margin-top:6px' }, pillBox),
+    h('label', {}, 'Назва сайту (у посиланні)'), nameInp,
+    h('label', {}, 'Адреса сайту'), urlInp,
+    h('div', { class: 'row' }, copyBtn, openA, shareBtn, dlBtn),
+    h('div', { class: 'row' }, deployBtn), term,
+    h('h4', {}, 'Деплої'), listBox,
+    h('p', { class: 'muted sm', style: 'margin-top:14px' }, 'Сайт публікується як посилання, що містить усі файли, — окремий сервер не потрібен.'));
+  showSheet(root); refresh();
+}
+$('#deployBtn').onclick = openDeploy;
+
+/* ================= маршрути ================= */
+async function route() {
+  const m = location.hash.match(/^#\/([^\/]*)\/(.+)$/);
+  if (m) {
+    showView('viewer');
+    try {
+      const d = await unpack(m[2]);
+      document.title = d.n || 'Сайт';
+      setFrame('vframe', buildDoc(d.f, { console: false }));
+      $('#badge').href = BASE;
+    } catch (e) {
+      setFrame('vframe', '<body style="font:16px sans-serif;padding:24px;background:#0d1117;color:#e6edf3">Не вдалося відкрити посилання. Воно пошкоджене або неповне.</body>');
+    }
+  } else { document.title = 'Clidex Editor'; showView('home'); renderHome(); }
+}
+$('#badgeX').onclick = e => { e.preventDefault(); e.stopPropagation(); $('#badge').hidden = true; };
+addEventListener('popstate', () => { if (!$('#project').hidden || !location.hash) goHome(); });
+addEventListener('hashchange', route);
+route();
+})();
+</script>
+</body>
+</html>
+

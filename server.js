@@ -1,18 +1,18 @@
 // Clidex Editor — мінімальний сервер без залежностей (Node 18+).
 // Віддає index.html і приймає запити ШІ-майстра на /api/generate.
-// Ключ Anthropic зберігається ЛИШЕ тут, у змінній середовища ANTHROPIC_API_KEY.
+// ШІ — Google Gemini. Ключ зберігається ЛИШЕ тут, у змінній середовища GEMINI_API_KEY.
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const KEY = process.env.ANTHROPIC_API_KEY || '';
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
-const API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';          // змініть на Render, якщо потрібна інша модель
+const API_BASE = (process.env.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 const PASSWORD = process.env.APP_PASSWORD || '';            // необов'язково: пароль на ШІ
 const HOURLY_LIMIT = parseInt(process.env.AI_HOURLY_LIMIT || '8', 10); // запитів на годину з однієї адреси
-const MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || '20000', 10);
+const MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || '32000', 10);
 const INDEX = path.join(__dirname, 'index.html');
 
 const SYSTEM = `You are a senior front-end developer and designer inside a mobile website builder.
@@ -94,36 +94,51 @@ async function generate(req, res) {
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   try {
-    const r = await fetch(API_URL, {
+    const url = API_BASE + '/models/' + encodeURIComponent(MODEL) + ':streamGenerateContent?alt=sse';
+    const r = await fetch(url, {
       method: 'POST', signal: ac.signal,
-      headers: { 'x-api-key': KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, max_tokens: MAX_TOKENS, stream: true, system: SYSTEM, messages: [{ role: 'user', content: msg }] })
+      headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ text: msg }] }],
+        generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
+      })
     });
     if (!r.ok) {
-      let detail = ''; try { detail = (await r.json()).error.message; } catch (e) {}
-      console.error('Anthropic API', r.status, detail);
-      const human = r.status === 401 ? 'Невірний ключ Anthropic на сервері' : r.status === 429 ? 'Забагато запитів до ШІ, спробуйте за хвилину' : r.status === 529 || r.status >= 500 ? 'Сервіс ШІ тимчасово недоступний' : 'Помилка сервісу ШІ (' + r.status + ')';
+      let detail = ''; try { detail = (await r.json()).error.message || ''; } catch (e) {}
+      console.error('Gemini API', r.status, detail);
+      const human = (r.status === 400 && /api key/i.test(detail)) || r.status === 401 ? 'Невірний ключ Gemini на сервері'
+        : r.status === 403 ? 'Ключ Gemini не має доступу (перевірте ключ і регіон)'
+        : r.status === 404 ? 'Модель «' + MODEL + '» не знайдено — перевірте змінну GEMINI_MODEL'
+        : r.status === 429 ? 'Перевищено ліміт запитів Gemini, спробуйте за хвилину'
+        : r.status >= 500 ? 'Сервіс Gemini тимчасово недоступний'
+        : 'Помилка сервісу Gemini (' + r.status + ')';
       send({ t: 'error', message: human }); return res.end();
     }
-    const dec = new TextDecoder(); let buf = '', text = '', stop = '', lastSent = 0;
+    const dec = new TextDecoder(); let buf = '', text = '', stop = '', blocked = '', lastSent = 0;
+    const handle = line => {
+      if (!line.startsWith('data:')) return;
+      let ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }
+      if (ev.error) throw new Error(ev.error.message || 'Помилка потоку');
+      if (ev.promptFeedback && ev.promptFeedback.blockReason) blocked = ev.promptFeedback.blockReason;
+      const c = ev.candidates && ev.candidates[0]; if (!c) return;
+      if (c.content && Array.isArray(c.content.parts)) c.content.parts.forEach(p => { if (typeof p.text === 'string' && !p.thought) text += p.text; });
+      if (c.finishReason) stop = c.finishReason;
+    };
     for await (const chunk of r.body) {
       buf += dec.decode(chunk, { stream: true });
       let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!line.startsWith('data:')) continue;
-        let ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
-        if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') text += ev.delta.text;
-        else if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) stop = ev.delta.stop_reason;
-        else if (ev.type === 'error') throw new Error((ev.error && ev.error.message) || 'Помилка потоку');
-      }
+      while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); handle(line); }
       const now = Date.now();
       if (now - lastSent > 400) { lastSent = now; send({ t: 'progress', chars: text.length }); }
     }
+    if (buf.trim()) handle(buf.trim());
     const out = parseOutput(text);
     if (!out.files['index.html'] && !Object.keys(out.files).some(n => /\.html?$/i.test(n))) {
-      send({ t: 'error', message: stop === 'max_tokens' ? 'Сайт вийшов завеликим. Опишіть простіший або коротший.' : 'ШІ не повернув коректний сайт. Спробуйте ще раз.' });
-    } else send({ t: 'done', name: out.name, files: out.files, truncated: stop === 'max_tokens' });
+      send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Сайт вийшов завеликим. Опишіть простіший або коротший.'
+        : blocked || /SAFETY|BLOCK|PROHIBITED|RECITATION|SPII/.test(stop) ? 'Gemini відхилив запит. Змініть опис сайту.'
+        : 'ШІ не повернув коректний сайт. Спробуйте ще раз.' });
+    } else send({ t: 'done', name: out.name, files: out.files, truncated: stop === 'MAX_TOKENS' });
   } catch (e) {
     if (!ac.signal.aborted) { console.error('generate:', e); send({ t: 'error', message: 'Не вдалося зв’язатися зі службою ШІ' }); }
   }
@@ -140,7 +155,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
     if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL });
     if (req.method === 'POST' && url === '/api/generate') {
-      if (!KEY) return json(res, 503, { error: 'На сервері не задано ANTHROPIC_API_KEY' });
+      if (!KEY) return json(res, 503, { error: 'На сервері не задано GEMINI_API_KEY' });
       if (PASSWORD && req.headers['x-app-password'] !== PASSWORD) return json(res, 401, { error: 'Невірний пароль' });
       const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
       if (limited(ip)) return json(res, 429, { error: 'Ліміт запитів до ШІ вичерпано. Спробуйте за годину.' });
@@ -150,4 +165,5 @@ const server = http.createServer(async (req, res) => {
   } catch (e) { console.error(e); if (!res.headersSent) json(res, 500, { error: 'Помилка сервера' }); else res.end(); }
 });
 server.requestTimeout = 0; server.headersTimeout = 30000; server.keepAliveTimeout = 65000;
-server.listen(PORT, () => console.log('Clidex Editor на порту ' + PORT + (KEY ? ' · ШІ увімкнено (' + MODEL + ')' : ' · ШІ вимкнено: немає ANTHROPIC_API_KEY')));
+server.listen(PORT, () => console.log('Clidex Editor на порту ' + PORT + (KEY ? ' · ШІ увімкнено (' + MODEL + ')' : ' · ШІ вимкнено: немає GEMINI_API_KEY')));
+                            

@@ -554,6 +554,7 @@ function download(files, name) {
   document.body.append(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
 }
 
+
 /* ================= файли: ZIP, фото ================= */
 function b64(u8) { let t = ''; for (let i = 0; i < u8.length; i += 0x8000) t += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(t); }
 const bytesToDataUrl = (u8, mime) => 'data:' + (mime || 'application/octet-stream') + ';base64,' + b64(u8);
@@ -593,4 +594,294 @@ function makeZip(entries) {
     const ch = new DataView(new ArrayBuffer(46));
     ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x800, true); ch.setUint16(12, tm, true); ch.setUint16(14, dt, true);
     ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
-    cen.push(new Uint8Array(ch.buff
+    cen.push(new Uint8Array(ch.buffer), nm); off += 30 + nm.length + sz;
+  });
+  let cs = 0; cen.forEach(c => { cs += c.length; });
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true); end.setUint32(12, cs, true); end.setUint32(16, off, true);
+  return new Blob(parts.concat(cen, [new Uint8Array(end.buffer)]), { type: 'application/zip' });
+}
+function downloadZip(files, name) {
+  const enc = new TextEncoder();
+  const entries = Object.keys(files).map(n => ({ name: n, data: isBin(n) && String(files[n]).startsWith('data:') ? dataToBytes(files[n]) : enc.encode(files[n]) }));
+  const url = URL.createObjectURL(makeZip(entries));
+  const a = h('a', { href: url, download: slug(name) + '.zip', style: 'display:none' });
+  document.body.append(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+}
+const readDataUrl = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+async function prepImage(blob, name) {            // стискає фото до 1600 px, щоб не забивати пам'ять
+  const e = ext(name), orig = await readDataUrl(new Blob([blob], { type: MIME[e] || blob.type || 'image/jpeg' }));
+  if (!/^(png|jpe?g|webp)$/.test(e)) return { data: orig, w: 0, h: 0 };
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = orig; });
+    const w0 = im.naturalWidth, h0 = im.naturalHeight, k = Math.min(1, 1600 / Math.max(w0, h0));
+    if (k === 1 && blob.size < 500 * 1024) return { data: orig, w: w0, h: h0 };
+    const w = Math.max(1, Math.round(w0 * k)), hh = Math.max(1, Math.round(h0 * k)), c = document.createElement('canvas');
+    c.width = w; c.height = hh; c.getContext('2d').drawImage(im, 0, 0, w, hh);
+    const out = e === 'png' ? c.toDataURL('image/png') : c.toDataURL(e === 'webp' ? 'image/webp' : 'image/jpeg', 0.82);
+    return out.length < orig.length ? { data: out, w, h: hh } : { data: orig, w, h: hh };
+  } catch (err) { return { data: orig, w: 0, h: 0 }; }
+}
+
+/* ================= вікна (sheet) ================= */
+let sheetCancel = null;
+function showSheet(node) { $('#sheet').replaceChildren(h('div', { class: 'grab' }), node); $('#modal').hidden = false; }
+function closeSheet() { const c = sheetCancel; sheetCancel = null; $('#modal').hidden = true; $('#sheet').replaceChildren(); if (c) c(); }
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeSheet(); });
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeSheet(); });
+function ask(ttl, value, ok, ph) {
+  return new Promise(res => {
+    let done = false;
+    const finish = v => { if (done) return; done = true; res(v); closeSheet(); };
+    const inp = h('input', { class: 'inp', value: value || '', placeholder: ph || '', maxlength: '60', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const form = h('form', { onsubmit: e => { e.preventDefault(); finish(inp.value.trim()); } },
+      h('h3', {}, ttl), h('div', { style: 'margin-top:10px' }, inp),
+      h('div', { class: 'row end' },
+        h('button', { type: 'button', class: 'btn', onclick: () => finish(null) }, 'Скасувати'),
+        h('button', { type: 'submit', class: 'btn primary' }, ok || 'Готово')));
+    sheetCancel = () => finish(null); showSheet(form);
+    setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  });
+}
+function confirmBox(ttl, text, ok, danger) {
+  return new Promise(res => {
+    let done = false;
+    const finish = v => { if (done) return; done = true; res(v); closeSheet(); };
+    sheetCancel = () => finish(false);
+    showSheet(h('div', {}, h('h3', {}, ttl), h('p', { class: 'muted' }, text),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', onclick: () => finish(false) }, 'Скасувати'),
+        h('button', { class: 'btn ' + (danger ? 'danger' : 'primary'), onclick: () => finish(true) }, ok || 'Так'))));
+  });
+}
+
+/* ================= редактор коду ================= */
+function hlJS(src) {
+  const re = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?|`(?:\\[\s\S]|[^`\\])*`?)|(\b0x[\da-fA-F]+\b|\b\d+(?:\.\d+)?\b)|(\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|this|super|delete|void|yield|static)\b)|(\b(?:true|false|null|undefined|NaN|Infinity)\b)|(\b[A-Za-z_$][\w$]*(?=\s*\())/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    const c = m[1] !== undefined ? 'c' : m[2] !== undefined ? 's' : m[3] !== undefined ? 'n' : m[4] !== undefined ? 'k' : m[5] !== undefined ? 'a' : 'f';
+    out += '<span class="t-' + c + '">' + esc(m[0]) + '</span>'; last = re.lastIndex;
+  }
+  return out + esc(src.slice(last));
+}
+function hlCSS(src) {
+  const re = /(\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)|(@[\w-]+)|([{};])|(#[\w-]+)|(-?(?:\d+\.?\d*|\.\d+)(?:px|em|rem|%|vh|vw|vmin|vmax|ms|s|deg|fr|ch)?)|([A-Za-z_-][\w-]*)|(\.[A-Za-z_-][\w-]*)|(::?[A-Za-z-]+)/g;
+  const stack = []; let start = 0, out = '', last = 0, m;
+  const sp = (c, s) => '<span class="t-' + c + '">' + esc(s) + '</span>';
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index)); last = re.lastIndex;
+    const decl = stack.length && stack[stack.length - 1];
+    if (m[1] !== undefined) out += sp('c', m[0]);
+    else if (m[2] !== undefined) out += sp('s', m[0]);
+    else if (m[3] !== undefined) out += sp('k', m[0]);
+    else if (m[4] !== undefined) {
+      if (m[0] === '{') stack.push(!/^\s*@(media|supports|keyframes|-webkit-keyframes|layer|container|document)/i.test(src.slice(start, m.index)));
+      else if (m[0] === '}') stack.pop();
+      start = m.index + 1; out += esc(m[0]);
+    }
+    else if (m[5] !== undefined) out += sp(decl ? 'n' : 'f', m[0]);
+    else if (m[6] !== undefined) out += sp('n', m[0]);
+    else if (m[7] !== undefined) out += decl ? (/^\s*:/.test(src.slice(re.lastIndex)) ? sp('p', m[0]) : esc(m[0])) : sp('tg', m[0]);
+    else if (m[8] !== undefined) out += sp('f', m[0]);
+    else out += decl ? esc(m[0]) : sp('k', m[0]);
+  }
+  return out + esc(src.slice(last));
+}
+function hlAttrs(a) {
+  const re = /([^\s"'<>\/=]+)(\s*=\s*)?("[^"]*"?|'[^']*'?|[^\s"'<>]+)?/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(a))) {
+    out += esc(a.slice(last, m.index)) + '<span class="t-at">' + esc(m[1]) + '</span>' + (m[2] ? esc(m[2]) : '') + (m[3] ? '<span class="t-s">' + esc(m[3]) + '</span>' : '');
+    last = re.lastIndex;
+  }
+  return out + esc(a.slice(last));
+}
+function hlMarkup(s) {
+  const re = /(<!--[\s\S]*?(?:-->|$))|(<![A-Za-z][^>]*>?)|(<\/?)([A-Za-z][\w:-]*)((?:\s+[^\s"'<>\/=]+(?:\s*=\s*(?:"[^"]*"?|'[^']*'?|[^\s"'<>]+))?)*)(\s*\/?>?)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(s))) {
+    out += esc(s.slice(last, m.index));
+    if (m[1] !== undefined || m[2] !== undefined) out += '<span class="t-c">' + esc(m[0]) + '</span>';
+    else out += esc(m[3]) + '<span class="t-tg">' + esc(m[4]) + '</span>' + hlAttrs(m[5]) + esc(m[6]);
+    last = re.lastIndex;
+  }
+  return out + esc(s.slice(last));
+}
+function hlHTML(src) {
+  const re = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>|$)|(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>|$)/gi;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += hlMarkup(src.slice(last, m.index));
+    out += m[1] !== undefined ? hlMarkup(m[1]) + hlCSS(m[2]) + hlMarkup(m[3]) : hlMarkup(m[4]) + hlJS(m[5]) + hlMarkup(m[6]);
+    last = re.lastIndex;
+  }
+  return out + hlMarkup(src.slice(last));
+}
+function highlight(text, name) {
+  if (text.length > 250000) return esc(text);
+  const e = ext(name);
+  if (e === 'html' || e === 'htm') return hlHTML(text);
+  if (e === 'css') return hlCSS(text);
+  if (e === 'js' || e === 'mjs' || e === 'json') return hlJS(text);
+  return esc(text);
+}
+
+const ta = $('#ta'), hl = $('#hl'), hlc = $('#hlc'), gutter = $('#gutter'), nums = $('#nums');
+const Ed = {
+  name: '', onChange: null, lines: 0,
+  load(text, name) { this.name = name; ta.value = text; this.render(); ta.scrollTop = 0; ta.scrollLeft = 0; this.sync(); },
+  render() {
+    hlc.innerHTML = highlight(ta.value, this.name) + '\n';
+    const n = ta.value.split('\n').length;
+    if (n !== this.lines) {
+      this.lines = n; let s = ''; for (let i = 1; i <= n; i++) s += i + '\n';
+      nums.textContent = s; gutter.style.width = 'calc(' + Math.max(2, String(n).length) + 'ch + 17px)';
+    }
+  },
+  sync() { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; gutter.scrollTop = ta.scrollTop; },
+  insert(s) {
+    ta.focus();
+    let ok = false; try { ok = document.execCommand('insertText', false, s); } catch (e) {}
+    if (!ok) { ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); }
+  },
+  caret(p) { ta.setSelectionRange(p, p); },
+  undo() { ta.focus(); try { document.execCommand('undo'); } catch (e) {} },
+  redo() { ta.focus(); try { document.execCommand('redo'); } catch (e) {} },
+  focus() { ta.focus(); }
+};
+ta.addEventListener('input', () => { Ed.render(); Ed.sync(); if (Ed.onChange) Ed.onChange(ta.value); });
+ta.addEventListener('scroll', () => Ed.sync());
+const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
+ta.addEventListener('beforeinput', e => {
+  if (e.isComposing) return;
+  const t = e.inputType, v = ta.value, s = ta.selectionStart, en = ta.selectionEnd;
+  if (t === 'insertLineBreak' || t === 'insertParagraph') {
+    e.preventDefault();
+    const ls = v.lastIndexOf('\n', s - 1) + 1, ind = v.slice(ls, s).match(/^[ \t]*/)[0];
+    const before = v[s - 1], after = v[en], pairs = { '{': '}', '[': ']', '(': ')' };
+    const tagOpen = before === '>' && after === '<' && /<[A-Za-z][^<>]*>$/.test(v.slice(ls, s)) && !/\/>$/.test(v.slice(ls, s));
+    if ((pairs[before] && after === pairs[before]) || tagOpen) {
+      Ed.insert('\n' + ind + '  \n' + ind); Ed.caret(s + 1 + ind.length + 2);
+    } else if (pairs[before]) Ed.insert('\n' + ind + '  ');
+    else Ed.insert('\n' + ind);
+    return;
+  }
+  if (t === 'insertText' && e.data && e.data.length === 1) {
+    const d = e.data, closers = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' };
+    if (s === en && ')]}"\'`'.includes(d) && v[s] === d) { e.preventDefault(); Ed.caret(s + 1); return; }
+    if (closers[d]) {
+      const nx = v[en], pv = v[s - 1], quote = '"\'`'.includes(d);
+      if (s !== en) { e.preventDefault(); Ed.insert(d + v.slice(s, en) + closers[d]); ta.setSelectionRange(s + 1, en + 1); return; }
+      if ((nx === undefined || /[\s)\]}>,;.:]/.test(nx)) && !(quote && pv && /\w/.test(pv))) {
+        e.preventDefault(); Ed.insert(d + closers[d]); Ed.caret(s + 1); return;
+      }
+    }
+    if (d === '>' && s === en && /\.(html?|svg)$/i.test(Ed.name)) {
+      const m = v.slice(0, s).match(/<([A-Za-z][\w:-]*)(?:\s[^<>]*)?$/);
+      if (m && !VOID.test(m[1]) && v[s - 1] !== '/') { e.preventDefault(); Ed.insert('></' + m[1] + '>'); Ed.caret(s + 1); }
+    }
+  }
+});
+ta.addEventListener('keydown', e => {
+  if (e.key === 'Tab') { e.preventDefault(); Ed.insert('  '); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (cur) { persist(); toast('Збережено'); } }
+});
+const KEYS = ['Tab', '<', '>', '/', '=', '"', "'", '{', '}', '(', ')', '[', ']', ';', ':', '.', ',', '#', '!', '$', '`', '↶', '↷'];
+KEYS.forEach(k => {
+  const b = h('button', { type: 'button', 'aria-label': k }, k);
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (k === 'Tab') Ed.insert('  '); else if (k === '↶') Ed.undo(); else if (k === '↷') Ed.redo();
+    else { Ed.insert(k); const v = ta.value, s = ta.selectionStart, cl = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' }[k]; if (cl && (v[s] === undefined || /[\s)\]}>,;]/.test(v[s]))) { Ed.insert(cl); Ed.caret(s); } }
+  });
+  b.addEventListener('contextmenu', e => e.preventDefault());
+  $('#keys').append(b);
+});
+
+/* ================= головна ================= */
+let cur = null, curFile = null, viewEntry = null, vEntry = null, vFiles = null;
+function showView(id) { ['home', 'project', 'viewer'].forEach(v => { $('#' + v).hidden = v !== id; }); }
+function renderHome() {
+  const ul = $('#projList'); ul.replaceChildren();
+  const q = $('#q').value.trim().toLowerCase();
+  const list = projects.filter(p => !q || title(p).toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
+  if (!list.length) {
+    ul.append(h('li', { class: 'empty' }, projects.length ? 'Нічого не знайдено.' : 'Проєктів ще немає. Натисніть «ШІ-майстер», щоб створити сайт за описом, або «Новий» — і пишіть код самі.'));
+    return;
+  }
+  list.forEach(p => {
+    const lang = topLang(p.files), live = p.deploys && p.deploys.length;
+    ul.append(h('li', { onclick: () => openProject(p.id) },
+      h('span', { class: 'muted', html: ic('repo') }),
+      h('div', { class: 'meta' },
+        h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' },
+          h('span', { class: 'nm' }, title(p)),
+          h('span', { class: 'pill' + (live ? ' live' : '') }, live ? [h('span', { class: 'dot' }), 'Live'] : 'Static Site')),
+        h('div', { class: 'sub' },
+          lang ? [h('span', { class: 'lang', style: 'background:' + lang[1] }), lang[0] + ' · '] : '',
+          Object.keys(p.files).length + ' файл(и) · ' + (p.commits ? p.commits.length : 1) + ' комітів · ' + ago(p.updated))),
+      h('button', { class: 'icon', 'aria-label': 'Видалити', html: ic('trash'), onclick: async e => {
+        e.stopPropagation();
+        if (await confirmBox('Видалити «' + title(p) + '»?', 'Проєкт, коміти та деплої буде видалено з цього пристрою.', 'Видалити', true)) {
+          projects = projects.filter(x => x.id !== p.id); persist(); renderHome();
+        }
+      } })));
+  });
+}
+$('#q').addEventListener('input', renderHome);
+$('#newBtn').onclick = async () => {
+  const name = await ask('Назва проєкту', '', 'Створити', 'Напр. Мій перший сайт');
+  if (name === null) return;
+  const nm = name || 'Без назви', files = starter(nm);
+  const p = { id: rid() + rid(), name: nm, files, updated: Date.now(), commits: [], deploys: [] };
+  ensureGit(p); projects.push(p); persist(); openProject(p.id);
+};
+
+/* ================= проєкт ================= */
+let dirty = true, saveT, filesT;
+function setPane(p) {
+  $('#workspace').dataset.pane = p;
+  document.querySelectorAll('.bottomnav button').forEach(b => b.classList.toggle('active', b.dataset.go === p));
+  if (p === 'preview' && dirty) renderNow();
+  if (p === 'code') Ed.sync();
+}
+document.querySelectorAll('.bottomnav button').forEach(b => { b.onclick = () => setPane(b.dataset.go); });
+
+function openProject(id) {
+  cur = projects.find(p => p.id === id); if (!cur) return;
+  ensureGit(cur);
+  showView('project'); history.pushState({ p: 1 }, '');
+  $('#nameInput').value = cur.name;
+  const first = cur.files['index.html'] != null ? 'index.html' : Object.keys(cur.files)[0];
+  viewEntry = null; openFile(first, true); renderFiles(); clearConsole(); dirty = true; updateUrl();
+  setPane(isWide() ? 'code' : 'files'); if (isWide()) renderNow();
+}
+function openFile(n, stay) {
+  curFile = n; $('#curFile').textContent = n;
+  const bin = isBin(n);
+  $('#ed').hidden = bin; $('#keys').hidden = bin; $('#binView').hidden = !bin;
+  if (bin) showBin(n); else Ed.load(cur.files[n], n);
+  renderFiles();
+  if (!stay && !isWide()) setPane('code');
+}
+function showBin(n) {
+  const d = String(cur.files[n]), v = $('#binView'), e = ext(n);
+  const info = h('div', { class: 'info' }, e.toUpperCase() + ' · ' + fmtSize(dataSize(d)) + ' · у коді: ' + n);
+  v.replaceChildren();
+  if (isImg(n)) v.append(h('img', { src: d, alt: n }), info);
+  else if (/^(mp3|wav|ogg|m4a)$/.test(e)) v.append(h('audio', { controls: true, src: d }), info);
+  else if (/^(mp4|webm)$/.test(e)) v.append(h('video', { controls: true, src: d, style: 'max-width:100%' }), info);
+  else v.append(info);
+}
+Ed.onChange = v => {
+  if (!cur) return;
+  cur.files[curFile] = v; dirty = true; touch(); scheduleRender();
+  clearTimeout(filesT); filesT = setTimeout(renderFiles, 350);
+};
+function touch() {
+  cur.updated = Date.now(); $('#saveState').textContent = 'Збереження…';
+  clearTimeout(saveT); saveT = setTimeout(() => { $('#saveState').textContent = persist() && !storageFail ? 'Збережено' : 'Не вдалося зберегти'; }, 500);
+}
+functi

@@ -884,4 +884,276 @@ function touch() {
   cur.updated = Date.now(); $('#saveState').textContent = 'Збереження…';
   clearTimeout(saveT); saveT = setTimeout(() => { $('#saveState').textContent = persist() && !storageFail ? 'Збережено' : 'Не вдалося зберегти'; }, 500);
 }
-functi
+function renderFiles() {
+  if (!cur) return;
+  const ch = changes(cur), tg = {}; ch.forEach(c => { tg[c.n] = c.t; });
+  const head = cur.commits[0];
+  $('#commitBar').replaceChildren(
+    h('span', { class: 'muted', html: ic('commit') }), h('span', { class: 'msg' }, head.msg),
+    h('code', { class: 'h' }, head.id), h('span', { class: 'muted sm' }, ago(head.t)));
+  $('#commitCountTxt').textContent = cur.commits.length + (ch.length ? ' · ' + ch.length + ' змін' : '');
+  const ul = $('#fileList'); ul.replaceChildren();
+  Object.keys(cur.files).forEach(n => {
+    const bin = isBin(n);
+    ul.append(h('li', { class: n === curFile ? 'active' : '', onclick: () => openFile(n) },
+      isImg(n) ? h('img', { class: 'thumb', src: cur.files[n], alt: '' }) : h('span', { class: 'muted', html: ic('file') }),
+      h('div', { class: 'meta' }, h('div', { class: 'nm', style: 'color:var(--fg);font-weight:500;word-break:break-all;white-space:normal' }, n),
+        bin ? h('div', { class: 'sub' }, fmtSize(dataSize(String(cur.files[n])))) : null),
+      tg[n] ? h('span', { class: 'tag ' + tg[n], style: 'margin:0' }, tg[n]) : null,
+      h('button', { class: 'icon', 'aria-label': 'Перейменувати', html: ic('pen'), onclick: e => { e.stopPropagation(); renameFile(n); } }),
+      h('button', { class: 'icon', 'aria-label': 'Видалити', html: ic('trash'), onclick: e => { e.stopPropagation(); deleteFile(n); } })));
+  });
+}
+const cleanName = v => (v || '').trim().replace(/\s+/g, '-').replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
+$('#addFile').onclick = async () => {
+  const n = cleanName(await ask('Назва нового файлу', '', 'Створити', 'about.html, app.js, style.css'));
+  if (!n) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  cur.files[n] = ''; touch(); dirty = true; openFile(n);
+};
+async function renameFile(old) {
+  const n = cleanName(await ask('Нова назва файлу', old, 'Зберегти'));
+  if (!n || n === old) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  const nf = {}; Object.keys(cur.files).forEach(k => { nf[k === old ? n : k] = cur.files[k]; });
+  cur.files = nf; touch(); dirty = true;
+  if (curFile === old) openFile(n, true); else renderFiles();
+  scheduleRender();
+}
+async function deleteFile(n) {
+  if (Object.keys(cur.files).length < 2) return toast('Має лишитися хоча б один файл');
+  if (!(await confirmBox('Видалити «' + n + '»?', 'Файл можна повернути, відновивши попередній коміт.', 'Видалити', true))) return;
+  delete cur.files[n];
+  if (curFile === n) openFile(Object.keys(cur.files)[0], true);
+  touch(); renderFiles(); dirty = true; scheduleRender();
+}
+/* ----- завантаження фото та готових файлів ----- */
+const SKIP = /(^|\/)(\.DS_Store|Thumbs\.db|node_modules|\.git|__MACOSX)(\/|$)/;
+const NOPE = /^(heic|heif|psd|ai|exe|dll|dmg|apk|rar|7z|tar|gz|doc|docx|xls|xlsx|ppt|pptx|zip|mov|avi|mkv)$/;
+const safeName = n => n.replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
+async function importOne(name, bytes, rep) {
+  name = safeName(name); if (!name || SKIP.test(name)) return;
+  const put = d => { if (cur.files[name] != null) rep.replaced++; else rep.added++; cur.files[name] = d; };
+  if (isBin(name)) {
+    if (bytes.length > 12 * 1048576) return rep.skipped.push(name + ' (понад 12 МБ)');
+    return put(isImg(name) ? (await prepImage(new Blob([bytes]), name)).data : bytesToDataUrl(bytes, MIME[ext(name)]));
+  }
+  if (NOPE.test(ext(name))) return rep.skipped.push(name + (/^hei[cf]$/.test(ext(name)) ? ' (HEIC не підтримується — оберіть JPEG)' : ' (непідтримуваний формат)'));
+  if (bytes.length > 2 * 1048576) return rep.skipped.push(name + ' (текстовий файл понад 2 МБ)');
+  let txt; try { txt = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { return rep.skipped.push(name + ' (не текстовий файл)'); }
+  put(txt.replace(/^﻿/, '').replace(/\r\n/g, '\n'));
+}
+async function importFiles(list) {
+  if (!cur) return;
+  const rep = { added: 0, replaced: 0, skipped: [] };
+  toast('Завантаження…');
+  for (const f of Array.from(list)) {
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      if (/\.zip$/i.test(f.name)) {
+        const items = (await readZip(buf)).filter(i => !SKIP.test(safeName(i.name))), roots = new Set(items.map(i => i.name.split('/')[0]));
+        const strip = roots.size === 1 && items.every(i => i.name.includes('/')) ? Array.from(roots)[0] + '/' : '';
+        for (const it of items) await importOne(strip ? it.name.slice(strip.length) : it.name, it.data, rep);
+      } else await importOne(f.name, buf, rep);
+    } catch (e) { rep.skipped.push(f.name + ' (' + (e && e.message || 'помилка') + ')'); }
+  }
+  const n = rep.added + rep.replaced;
+  if (n) {
+    touch(); dirty = true;
+    openFile(cur.files[curFile] != null ? curFile : Object.keys(cur.files)[0], true); scheduleRender();
+    toast((rep.added ? 'Додано: ' + rep.added : '') + (rep.replaced ? (rep.added ? ', ' : '') + 'замінено: ' + rep.replaced : ''));
+  }
+  if (rep.skipped.length) {
+    showSheet(h('div', {}, h('h3', {}, n ? 'Частину файлів пропущено' : 'Нічого не додано'),
+      h('div', { class: 'warn' }, rep.skipped.slice(0, 12).map(t => h('div', {}, t))),
+      h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: closeSheet }, 'Зрозуміло'))));
+  } else if (!n) toast('Нічого не додано');
+}
+$('#addPhoto').onclick = () => $('#inPhoto').click();
+$('#addUpload').onclick = () => $('#inFiles').click();
+['#inPhoto', '#inFiles'].forEach(sel => $(sel).addEventListener('change', e => { const l = Array.from(e.target.files); e.target.value = ''; if (l.length) importFiles(l); }));
+$('#filesPane').addEventListener('dragover', e => e.preventDefault());
+$('#filesPane').addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer && e.dataTransfer.files.length) importFiles(e.dataTransfer.files); });
+
+$('#nameInput').addEventListener('input', e => { cur.name = e.target.value; touch(); updateUrl(); });
+function goHome() { cur = null; showView('home'); renderHome(); }
+$('#back').onclick = () => { goHome(); if (history.state && history.state.p) history.back(); };
+
+/* ================= перегляд ================= */
+let renderT, errs = 0;
+function updateUrl() { if (cur) $('#urlText').textContent = slug(title(cur)) + '/' + (viewEntry || 'index.html'); }
+function scheduleRender() { clearTimeout(renderT); renderT = setTimeout(() => { if (isWide() || $('#workspace').dataset.pane === 'preview') renderNow(); }, 450); }
+function renderNow() { if (!cur) return; dirty = false; clearConsole(); setFrame('frame', buildDoc(cur.files, { console: true, nav: true, entry: viewEntry })); }
+$('#reload').onclick = renderNow;
+$('#openTab').onclick = () => {
+  const url = URL.createObjectURL(new Blob([buildDoc(cur.files, { console: false })], { type: 'text/html' }));
+  const w = window.open(url, '_blank'); if (!w) toast('Браузер заблокував вікно — дозвольте спливні вікна');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+function clearConsole() { errs = 0; $('#conLines').replaceChildren(); $('#conCount').hidden = true; }
+$('#conBtn').onclick = () => { const c = $('#console'); c.hidden = !c.hidden; };
+$('#conClear').onclick = clearConsole;
+function resolveNav(files, from, href) {
+  const p = href.split('#')[0].split('?')[0]; if (!p) return null;
+  const dir = from && from.includes('/') ? from.slice(0, from.lastIndexOf('/') + 1) : '';
+  const clean = t => t.split('/').reduce((a, seg) => { if (seg === '..') a.pop(); else if (seg && seg !== '.') a.push(seg); return a; }, []).join('/');
+  for (const c of [clean(p.startsWith('/') ? p.slice(1) : dir + p), clean(p)]) {
+    if (files[c] != null && /\.html?$/i.test(c)) return c;
+    if (files[c + '/index.html'] != null) return c + '/index.html';
+    if (files[c + '.html'] != null) return c + '.html';
+  }
+  return null;
+}
+addEventListener('message', e => {
+  const d = e.data; if (!d || !d.clx) return;
+  if (d.t === 'nav') {
+    if (cur && e.source === $('#frame').contentWindow) {
+      const to = resolveNav(cur.files, viewEntry, String(d.href)); if (!to) return toast('Сторінку не знайдено: ' + d.href);
+      viewEntry = to; updateUrl(); renderNow();
+    } else if (vFiles && e.source === $('#vframe').contentWindow) {
+      const to = resolveNav(vFiles, vEntry, String(d.href)); if (!to) return;
+      vEntry = to; setFrame('vframe', buildDoc(vFiles, { nav: true, entry: to }));
+    }
+    return;
+  }
+  if (e.source !== $('#frame').contentWindow) return;
+  $('#conLines').append(h('div', { class: d.t }, d.a.join(' ')));
+  if (d.t === 'error') { errs++; $('#conCount').textContent = errs; $('#conCount').hidden = false; }
+  const l = $('#conLines'); l.scrollTop = l.scrollHeight;
+});
+
+/* ================= коміти (як GitHub) ================= */
+function openCommits() {
+  const ch = changes(cur), dm = defaultMsg(ch);
+  const msg = h('input', { class: 'inp', placeholder: dm || 'Опис коміту', maxlength: '80', autocomplete: 'off' });
+  const doCommit = () => {
+    const c = commit(cur, msg.value.trim() || dm);
+    if (c) { toast('Коміт ' + c.id + ' створено'); renderFiles(); openCommits(); }
+  };
+  const list = h('div', {});
+  cur.commits.forEach((c, i) => {
+    list.append(h('div', { class: 'item' },
+      h('span', { class: 'muted', html: ic('commit') }),
+      h('div', { class: 'meta' }, h('div', { class: 't' }, c.msg),
+        h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, c.id), ' · ' + ago(c.t) + (i === 0 ? ' · HEAD' : '')])),
+      i === 0 && !ch.length ? null : h('button', { class: 'btn sm', onclick: async () => {
+        if (!(await confirmBox('Відновити коміт ' + c.id + '?', 'Поточні файли буде замінено файлами з цього коміту. Незакомічені зміни зникнуть.', 'Відновити'))) return;
+        cur.files = Object.assign({}, c.files); touch(); dirty = true;
+        openFile(cur.files[curFile] != null ? curFile : Object.keys(cur.files)[0], true); renderFiles(); scheduleRender(); toast('Відновлено ' + c.id);
+      } }, 'Відновити')));
+  });
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('commit') }), 'Коміти']),
+    h('label', {}, ch.length ? 'Змінені файли' : 'Зміни'),
+    ch.length ? h('div', {}, ch.map(c => h('div', { class: 'sm', style: 'padding:2px 0' }, [h('span', { class: 'tag ' + c.t }, c.t), c.n])))
+              : h('p', { class: 'muted sm' }, 'Немає незакомічених змін.'),
+    h('label', {}, 'Опис коміту'), msg,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: !ch.length, onclick: doCommit }, 'Закомітити зміни')),
+    h('h4', {}, 'Історія (' + cur.commits.length + ')'), list));
+}
+$('#commitsBtn').onclick = openCommits; $('#commitCount').onclick = openCommits;
+
+/* ================= деплой (як Render) ================= */
+async function doDeploy(p, log, pace) {
+  const w = pace === false ? () => Promise.resolve() : wait;
+  await w(350);
+  const ch = changes(p);
+  if (ch.length) { const c = commit(p, 'Deploy: ' + defaultMsg(ch)); log('Закомічено зміни (' + ch.length + '): ' + c.id); await w(350); }
+  const head = p.commits[0];
+  log('Деплой коміту ' + head.id + ' — ' + head.msg); await w(450);
+  log('Збираємо файли проєкту (' + Object.keys(head.files).length + ')'); await w(450);
+  log('Команда збірки не потрібна — статичний сайт'); await w(400);
+  const link = await makeLink(head.files, title(p));
+  log('Створюємо посилання (' + fmtSize(link.length) + ')'); await w(450);
+  p.deploys.unshift({ id: rid(), commit: head.id, t: Date.now() }); p.deploys = p.deploys.slice(0, 20); p.updated = Date.now(); persist();
+  log('Сайт активний. Деплой завершено.');
+  return link;
+}
+let deploying = false;
+function openDeploy() {
+  const p = cur, root = h('div', {});
+  const nameInp = h('input', { class: 'inp', value: p.name, maxlength: '60', placeholder: 'Назва сайту', autocomplete: 'off' });
+  const urlInp = h('input', { class: 'inp mono', readonly: true, style: 'font-size:12px', placeholder: 'Посилання з’явиться після першого деплою', onfocus: e => e.target.select() });
+  const openA = h('a', { class: 'btn', target: '_blank', rel: 'noopener' }, 'Відкрити');
+  const pillBox = h('span', {}), listBox = h('div', {}), term = h('div', { class: 'term', hidden: true });
+  const deployBtn = h('button', { class: 'btn primary wide', onclick: run }, [h('span', { html: ic('up') }), 'Деплой']);
+  const copyBtn = h('button', { class: 'btn', onclick: () => urlInp.value && copyText(urlInp.value, urlInp) }, 'Копіювати');
+  const dlBtn = h('button', { class: 'btn', onclick: () => {
+    const d = p.deploys[0], c = d && findCommit(p, d.commit); download(c ? c.files : p.files, title(p));
+  } }, 'Завантажити .html');
+  const zipBtn = h('button', { class: 'btn', onclick: () => { const d = p.deploys[0], c = d && findCommit(p, d.commit); downloadZip(c ? c.files : p.files, title(p)); } }, 'ZIP для GitHub');
+  const noteBox = h('p', { class: 'muted sm' });
+  const shareBtn = navigator.share ? h('button', { class: 'btn', onclick: () => urlInp.value && navigator.share({ title: title(p), url: urlInp.value }).catch(() => {}) }, 'Надіслати') : null;
+  let tk = 0;
+  function pill(kind, text) { pillBox.replaceChildren(h('span', { class: 'pill ' + kind }, [h('span', { class: 'dot' }), text])); }
+  async function refresh() {
+    const my = ++tk, live = p.deploys[0];
+    if (!deploying) pill(live ? 'live' : '', live ? 'Live · ' + ago(live.t) : 'Не опубліковано');
+    const ch = changes(p);
+    deployBtn.lastChild.textContent = ch.length ? 'Закомітити й задеплоїти (' + ch.length + ')' : 'Задеплоїти останній коміт';
+    listBox.replaceChildren();
+    const rows = p.deploys.slice(0, 5);
+    const links = await Promise.all(rows.map(d => { const c = findCommit(p, d.commit); return c ? makeLink(c.files, title(p)) : Promise.resolve(''); }));
+    if (my !== tk) return;
+    if (links[0]) { urlInp.value = links[0]; openA.href = links[0]; } else { urlInp.value = ''; openA.removeAttribute('href'); }
+    [copyBtn, dlBtn, zipBtn, shareBtn].forEach(b => { if (b) b.toggleAttribute('disabled', !links[0]); });
+    openA.style.opacity = links[0] ? '' : '.5'; openA.style.pointerEvents = links[0] ? '' : 'none';
+    noteBox.textContent = links[0] ? 'Розмір посилання: ' + fmtSize(links[0].length) + (links[0].length > 60000 ? ' — довге: месенджери можуть його обрізати. Для надійного поширення завантажте ZIP і розмістіть на GitHub/Render.' : '') : '';
+    rows.forEach((d, i) => {
+      const c = findCommit(p, d.commit);
+      listBox.append(h('div', { class: 'item' },
+        h('span', { class: 'pill ' + (i === 0 ? 'live' : '') }, [h('span', { class: 'dot' }), i === 0 ? 'Live' : 'Старий']),
+        h('div', { class: 'meta' }, h('div', { class: 't' }, c ? c.msg : '—'),
+          h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, d.commit), ' · ' + ago(d.t)])),
+        links[i] ? h('a', { class: 'btn sm', href: links[i], target: '_blank', rel: 'noopener' }, 'Відкрити') : null));
+    });
+    if (!rows.length) listBox.append(h('p', { class: 'muted sm' }, 'Деплоїв ще не було.'));
+  }
+  async function run() {
+    if (deploying) return; deploying = true; deployBtn.setAttribute('disabled', ''); term.hidden = false; term.replaceChildren(); pill('build', 'Deploying…');
+    const log = (t, cls) => { term.append(h('div', {}, [h('span', { class: 'arrow' }, cls ? '' : '==> '), h('span', { class: cls || '' }, t)])); term.scrollTop = term.scrollHeight; };
+    try {
+      await doDeploy(p, log); renderFiles();
+      deploying = false; pill('live', 'Live · щойно');
+    } catch (e) { deploying = false; pill('fail', 'Помилка'); log(String(e && e.message || e), 'err'); }
+    deployBtn.removeAttribute('disabled'); refresh();
+  }
+  nameInp.addEventListener('input', () => { p.name = nameInp.value; $('#nameInput').value = nameInp.value; touch(); updateUrl(); clearTimeout(nameInp._t); nameInp._t = setTimeout(refresh, 250); });
+  root.append(
+    h('h3', {}, [h('span', { html: ic('up') }), 'Деплой', h('span', { class: 'pill' }, 'Static Site')]),
+    h('div', { style: 'margin-top:6px' }, pillBox),
+    h('label', {}, 'Назва сайту (у посиланні)'), nameInp,
+    h('label', {}, 'Адреса сайту'), urlInp,
+    h('div', { class: 'row' }, copyBtn, openA, shareBtn, dlBtn, zipBtn), noteBox,
+    h('div', { class: 'row' }, deployBtn), term,
+    h('h4', {}, 'Деплої'), listBox,
+    h('p', { class: 'muted sm', style: 'margin-top:14px' }, 'Сайт публікується як посилання, що містить усі файли, — окремий сервер не потрібен.'));
+  showSheet(root); refresh();
+}
+$('#deployBtn').onclick = openDeploy;
+
+/* ================= ШІ-майстер ================= */
+const PW_KEY = 'clidex.aipw';
+async function aiHealth() {
+  try {
+    const r = await fetch(new URL('api/health', BASE), { cache: 'no-store' }); if (!r.ok) return null;
+    const j = await r.json(); return j && typeof j.ai === 'boolean' ? j : null;
+  } catch (e) { return null; }
+}
+async function aiGenerate(o, onProgress, signal) {
+  const headers = { 'Content-Type': 'application/json' }; if (o.password) headers['X-App-Password'] = o.password;
+  let res;
+  try { res = await fetch(new URL('api/generate', BASE), { method: 'POST', headers, signal, body: JSON.stringify({ prompt: o.prompt, name: o.name, images: o.images }) }); }
+  catch (e) { if (e.name === 'AbortError') throw e; throw new Error('Немає зв’язку із сервером'); }
+  if (!res.ok) {
+    let msg = 'Помилка сервера (' + res.status + ')'; try { msg = (await res.json()).error || msg; } catch (e) {}
+    const err = new Error(msg); err.status = res.status; throw err;
+  }
+  const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '', result = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const

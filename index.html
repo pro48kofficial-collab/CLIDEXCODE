@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#161b22">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Clidex Editor</title>
+<style>
+  :root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--line:#30363d;--fg:#e6edf3;--mute:#8b949e;
+    --blue:#58a6ff;--green:#238636;--greenh:#2ea043;--live:#3fb950;--red:#f85149;--yellow:#d29922;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  [hidden]{display:none!important}
+  button{font:inherit;color:inherit}
+  #app{height:var(--app-h,100dvh);position:relative;overflow:hidden}
+  .view{position:absolute;inset:0;display:flex;flex-direction:column}
+  .grow{flex:1}
+  .muted{color:var(--mute)} .sm{font-size:12px} .mono{font-family:var(--mono)}
+  svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+  .top{display:flex;align-items:center;gap:8px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));
+    background:var(--bg2);border-bottom:1px solid var(--line);flex:none}
+  .logo{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--bg3);border:1px solid var(--line)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--bg3);color:var(--fg);
+    border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap;min-height:32px}
+  .btn:active{filter:brightness(1.25)}
+  .btn.primary{background:var(--green);border-color:rgba(240,246,252,.1);color:#fff}
+  .btn.danger{color:var(--red)}
+  .btn.sm{padding:2px 10px;font-size:12px;min-height:26px}
+  .btn.wide{width:100%;min-height:40px;font-size:15px}
+  .btn[disabled]{opacity:.5;pointer-events:none}
+  .icon{display:grid;place-items:center;width:36px;height:36px;background:transparent;border:1px solid transparent;
+    border-radius:6px;color:var(--mute);cursor:pointer;flex:none;padding:0}
+  .icon:active{background:var(--bg3);color:var(--fg)}
+  .pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:0 8px;
+    font-size:12px;font-weight:500;color:var(--mute);line-height:20px;white-space:nowrap}
+  .pill.live{color:var(--live);border-color:#238636}
+  .pill.build{color:var(--yellow);border-color:#9e6a03}
+  .pill.fail{color:var(--red);border-color:#da3633}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;flex:none}
+
+  .scroll{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
+  .wrap{max-width:760px;margin:0 auto;padding:16px}
+  .h1{font-size:20px;font-weight:600;margin:4px 0 12px}
+  .box{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--bg)}
+  .box-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);font-size:13px;min-width:0}
+  .box-head .msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list{list-style:none;margin:0;padding:0}
+  .list>li{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid var(--line);cursor:pointer}
+  .list>li:first-child{border-top:0}
+  .list>li:active{background:var(--bg2)}
+  .list>li.active{background:#1f6feb26;box-shadow:inset 3px 0 0 var(--blue)}
+  .list .meta{flex:1;min-width:0}
+  .list .nm{color:var(--blue);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list .sub{color:var(--mute);font-size:12px}
+  .empty{padding:32px 16px;text-align:center;color:var(--mute);cursor:default!important;display:block!important}
+  .lang{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:baseline}
+  .tag{display:inline-block;width:18px;text-align:center;border-radius:4px;font:600 11px/18px var(--mono);margin-right:6px}
+  .tag.M{color:var(--yellow);background:#d2992226}.tag.A{color:var(--live);background:#3fb95026}.tag.D{color:var(--red);background:#f8514926}
+  code.h{font:12px var(--mono);background:var(--bg3);border-radius:4px;padding:1px 6px;color:var(--mute)}
+
+  .name{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px dashed var(--line);color:var(--blue);
+    font:inherit;font-size:16px;font-weight:600;padding:4px 2px;outline:none}
+  .name:focus{border-bottom-color:var(--blue)}
+
+  .workspace{flex:1;min-height:0;display:flex;flex-direction:column}
+  .pane{display:none;flex:1;min-height:0;flex-direction:column;min-width:0}
+  .workspace[data-pane=files] #filesPane,.workspace[data-pane=code] #codePane,.workspace[data-pane=preview] #previewPane{display:flex}
+  #filesPane{overflow:auto}
+  #filesPane .inner{padding:12px}
+  .filebar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);flex:none;font-size:13px}
+
+  /* власний редактор: textarea + підсвітка */
+  .ed{flex:1;min-height:0;display:flex;position:relative;background:var(--bg);overflow:hidden}
+  .gutter{flex:none;overflow:hidden;border-right:1px solid var(--line);color:#6e7681;text-align:right;user-select:none;-webkit-user-select:none}
+  #nums{padding:10px 8px 120px;white-space:pre;font:13px/20px var(--mono)}
+  .stack{position:relative;flex:1;min-width:0}
+  #hl,#ta{position:absolute;inset:0;margin:0;border:0;padding:10px 12px 120px 12px;font:13px/20px var(--mono);
+    font-variant-ligatures:none;tab-size:2;-moz-tab-size:2;white-space:pre;letter-spacing:0;overflow:auto;border-radius:0}
+  #hl{overflow:hidden;pointer-events:none;color:var(--fg);padding-right:80px}
+  #hl code{font:inherit}
+  #ta{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:#e6edf3;resize:none;outline:none;
+    padding-right:40px;-webkit-appearance:none;appearance:none;z-index:1;-webkit-text-size-adjust:100%}
+  #ta::selection{background:#1f6feb66;-webkit-text-fill-color:transparent}
+  .t-c{color:#8b949e;font-style:italic}.t-s{color:#a5d6ff}.t-n{color:#79c0ff}.t-k{color:#ff7b72}.t-a{color:#79c0ff}
+  .t-f{color:#d2a8ff}.t-tg{color:#7ee787}.t-at{color:#79c0ff}.t-p{color:#79c0ff}
+  .keys{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:var(--bg2);border-top:1px solid var(--line);flex:none;scrollbar-width:none}
+  .keys::-webkit-scrollbar{display:none}
+  .keys button{flex:none;min-width:38px;height:36px;background:var(--bg3);border:1px solid var(--line);
+    border-radius:6px;font:600 15px var(--mono);padding:0 10px;touch-action:manipulation}
+  .keys button:active{background:var(--blue);color:#000}
+
+  .urlbar{display:flex;align-items:center;gap:4px;padding:6px 8px;background:var(--bg2);border-bottom:1px solid var(--line);flex:none}
+  .url{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;
+    color:var(--mute);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #frame{flex:1;min-height:0;width:100%;border:0;background:#fff}
+  .console{flex:none;max-height:40%;display:flex;flex-direction:column;border-top:1px solid var(--line);background:var(--bg)}
+  .console-head{display:flex;align-items:center;justify-content:space-between;padding:4px 10px;background:var(--bg2);font-size:12px;font-weight:600}
+  #conLines{overflow:auto;padding:4px 10px;font:12px/1.5 var(--mono)}
+  #conLines div{padding:2px 0;border-bottom:1px solid #21262d;white-space:pre-wrap;word-break:break-word}
+  #conLines .error{color:var(--red)} #conLines .warn{color:var(--yellow)}
+  #conCount{background:var(--red);color:#fff;border-radius:999px;font-size:10px;padding:0 5px;margin-left:2px}
+
+  .bottomnav{display:flex;flex:none;background:var(--bg2);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+  .bottomnav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 6px;background:none;border:0;
+    color:var(--mute);font-size:11px;cursor:pointer}
+  .bottomnav button.active{color:var(--fg);box-shadow:inset 0 2px 0 #f78166}
+  body.kb .bottomnav{display:none}
+
+  #viewer{position:absolute;inset:0;background:#fff}
+  #viewer iframe{width:100%;height:100%;border:0}
+  .badge{position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:6px;
+    background:#161b22ee;color:#e6edf3;border:1px solid #30363d;border-radius:999px;padding:5px 6px 5px 12px;font-size:12px;
+    text-decoration:none;box-shadow:0 4px 14px #0006}
+  .badge b{font-weight:600}
+  .badge button{background:none;border:0;color:#8b949e;font-size:16px;line-height:1;padding:0 6px;cursor:pointer}
+
+  .modal{position:fixed;inset:0;background:#010409b3;display:flex;align-items:flex-end;justify-content:center;z-index:50}
+  .sheet{width:100%;max-width:560px;background:var(--bg2);border:1px solid var(--line);border-radius:12px 12px 0 0;
+    padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:92%;overflow:auto;-webkit-overflow-scrolling:touch}
+  .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 12px}
+  .sheet h3{margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sheet h4{margin:16px 0 8px;font-size:13px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .sheet label{display:block;margin:12px 0 4px;font-size:12px;color:var(--mute)}
+  .sheet p{margin:6px 0}
+  .inp{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 12px;
+    font:inherit;font-size:16px;outline:none}
+  .inp:focus{border-color:var(--blue);box-shadow:0 0 0 3px #1f6feb55}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .row .btn{flex:1}
+  .row.end{justify-content:flex-end}.row.end .btn{flex:none}
+  .term{background:#000;border:1px solid var(--line);border-radius:6px;padding:10px;font:12px/1.6 var(--mono);color:#c9d1d9;
+    max-height:190px;overflow:auto;margin-top:12px;white-space:pre-wrap;word-break:break-word}
+  .term .arrow{color:var(--live)} .term .err{color:var(--red)}
+  .item{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+  .item:first-of-type{border-top:0}
+  .item .meta{flex:1;min-width:0}
+  .item .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;
+    border-radius:8px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90%;text-align:center}
+  #toast.show{opacity:1}
+
+  .hero{display:flex;align-items:center;gap:12px;padding:14px;margin-bottom:14px;border:1px solid #1f6feb66;border-radius:8px;
+    background:linear-gradient(135deg,#1f6feb22,#8957e522);cursor:pointer;width:100%;text-align:left}
+  .hero:active{filter:brightness(1.15)}
+  .hero .ico{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#1f6feb;color:#fff;flex:none}
+  .hero .ico svg{width:20px;height:20px}
+  .hero b{display:block;font-size:15px}
+  .hero span.s{display:block;color:var(--mute);font-size:12px;margin-top:2px}
+  textarea.inp{resize:vertical;min-height:120px;font-family:inherit;line-height:1.45}
+  .binview{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;
+    background:conic-gradient(#161b22 25%,#0d1117 0 50%,#161b22 0 75%,#0d1117 0) 0 0/20px 20px}
+  .binview img{max-width:100%;max-height:65%;object-fit:contain;border:1px solid var(--line);border-radius:6px;background:#0008}
+  .binview .info{color:var(--mute);font-size:12px;text-align:center;background:#0d1117dd;padding:6px 12px;border-radius:6px}
+  .thumb{width:22px;height:22px;border-radius:4px;object-fit:cover;flex:none;border:1px solid var(--line)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .chip{position:relative;width:56px;height:56px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .chip img{width:100%;height:100%;object-fit:cover;display:block}
+  .chip button{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;border:0;background:#000b;color:#fff;font-size:14px;line-height:20px;padding:0}
+  .steps{margin-top:14px}
+  .steps .st{display:flex;gap:10px;align-items:center;padding:5px 0;color:var(--mute)}
+  .steps .st.on{color:var(--fg)} .steps .st.done{color:var(--live)}
+  .steps .ck{width:14px;text-align:center;flex:none}
+  .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;flex:none}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .warn{border:1px solid #9e6a03;background:#d2992214;color:var(--yellow);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:10px}
+  .ok{border:1px solid #238636;background:#23863614;color:var(--live);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:10px}
+  .ex{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  @media(min-width:900px){
+    .workspace{flex-direction:row}
+    .pane{display:flex!important}
+    #filesPane{flex:0 0 290px;border-right:1px solid var(--line)}
+    #codePane{flex:1;border-right:1px solid var(--line)}
+    #previewPane{flex:1}
+    .bottomnav{display:none}
+    .modal{align-items:center}.sheet{border-radius:12px;padding-top:16px}.grab{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Головна: список проєктів -->
+  <section id="home" class="view">
+    <header class="top">
+      <span class="logo" data-ic="code"></span><strong>Clidex Editor</strong>
+      <span class="grow"></span>
+      <button class="btn" id="aiBtn"><span data-ic="spark"></span>ШІ</button>
+      <button class="btn primary" id="newBtn"><span data-ic="plus"></span>Новий</button>
+    </header>
+    <div class="scroll"><div class="wrap">
+      <button class="hero" id="aiHero"><span class="ico" data-ic="spark"></span><span><b>ШІ-майстер</b><span class="s">Опишіть сайт — ШІ напише код, збере проєкт і задеплоїть</span></span></button>
+      <h1 class="h1">Ваші проєкти</h1>
+      <input class="inp" id="q" placeholder="Знайти проєкт…" autocomplete="off" style="margin-bottom:12px">
+      <div class="box"><ul class="list" id="projList"></ul></div>
+    </div></div>
+  </section>
+
+  <!-- Проєкт -->
+  <section id="project" class="view" hidden>
+    <header class="top">
+      <button class="icon" id="back" aria-label="Назад" data-ic="back"></button>
+      <input class="name" id="nameInput" maxlength="60" placeholder="Назва сайту" autocomplete="off" spellcheck="false" aria-label="Назва сайту">
+      <button class="icon" id="commitsBtn" aria-label="Коміти" data-ic="commit"></button>
+      <button class="btn primary" id="deployBtn"><span data-ic="up"></span>Деплой</button>
+    </header>
+    <div class="workspace" id="workspace" data-pane="files">
+      <aside class="pane" id="filesPane"><div class="inner">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span class="pill"><span data-ic="branch"></span>main</span>
+          <span class="grow"></span>
+          <button class="btn sm" id="commitCount"><span data-ic="clock"></span><span id="commitCountTxt"></span></button>
+        </div>
+        <div class="box">
+          <div class="box-head" id="commitBar"></div>
+          <ul class="list" id="fileList"></ul>
+        </div>
+        <div class="row">
+          <button class="btn" id="addFile"><span data-ic="plus"></span>Новий файл</button>
+          <button class="btn" id="addPhoto"><span data-ic="image"></span>Фото</button>
+          <button class="btn" id="addUpload"><span data-ic="up"></span>Файли / ZIP</button>
+        </div>
+        <input type="file" id="inPhoto" accept="image/*" multiple hidden>
+        <input type="file" id="inFiles" multiple hidden>
+      </div></aside>
+      <div class="pane" id="codePane">
+        <div class="filebar"><span data-ic="file"></span><strong id="curFile"></strong><span class="grow"></span><span class="muted sm" id="saveState">Збережено</span></div>
+        <div class="ed" id="ed">
+          <div class="gutter" id="gutter"><div id="nums"></div></div>
+          <div class="stack">
+            <pre id="hl" aria-hidden="true"><code id="hlc"></code></pre>
+            <textarea id="ta" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" aria-label="Код"></textarea>
+          </div>
+        </div>
+        <div class="keys" id="keys"></div>
+        <div class="binview" id="binView" hidden></div>
+      </div>
+      <div class="pane" id="previewPane">
+        <div class="urlbar">
+          <button class="icon" id="reload" aria-label="Оновити" data-ic="refresh"></button>
+          <div class="url" id="urlText"></div>
+          <button class="icon" id="conBtn" aria-label="Консоль"><span data-ic="term"></span><span id="conCount" hidden></span></button>
+          <button class="icon" id="openTab" aria-label="Відкрити у вкладці" data-ic="ext"></button>
+        </div>
+        <iframe id="frame" title="Перегляд" sandbox="allow-scripts allow-modals allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+        <div class="console" id="console" hidden>
+          <div class="console-head"><span>Консоль</span><button class="btn sm" id="conClear">Очистити</button></div>
+          <div id="conLines"></div>
+        </div>
+      </div>
+    </div>
+    <nav class="bottomnav">
+      <button data-go="files" class="active"><span data-ic="folder"></span>Файли</button>
+      <button data-go="code"><span data-ic="code"></span>Код</button>
+      <button data-go="preview"><span data-ic="play"></span>Перегляд</button>
+    </nav>
+  </section>
+
+  <!-- Сайт за посиланням -->
+  <section id="viewer" hidden>
+    <iframe id="vframe" title="Сайт" sandbox="allow-scripts allow-modals allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <a class="badge" id="badge" href="#"><span data-ic="code"></span><b>Clidex Editor</b><button id="badgeX" aria-label="Закрити">×</button></a>
+  </section>
+
+  <div class="modal" id="modal" hidden><div class="sheet" id="sheet"></div></div>
+  <div id="toast"></div>
+</div>
+
+<script>
+(function () {
+'use strict';
+const $ = s => document.querySelector(s);
+const KEY = 'clidex.projects.v1';
+const BASE = location.href.split('#')[0];
+
+/* ================= іконки ================= */
+const IC = {
+  code:'<path d="M5.5 4L1.5 8l4 4M10.5 4l4 4-4 4"/>', plus:'<path d="M8 2.5v11M2.5 8h11"/>',
+  back:'<path d="M10 2.5L4.5 8 10 13.5"/>', play:'<path d="M4.5 3v10l8-5z"/>',
+  file:'<path d="M4 1.5h5l3.5 3.5v9.5H4z"/><path d="M9 1.5V5h3.5"/>', folder:'<path d="M1.5 3.5h4.5l1.5 1.5h7v8h-13z"/>',
+  refresh:'<path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.5v3h-3"/>', term:'<path d="M2 3.5h12v9H2zM4.5 6.5l2 1.5-2 1.5M8 10h3"/>',
+  ext:'<path d="M9 2.5h4.5V7M13.5 2.5l-6 6M12 9.5v4H2.5V4h4"/>', trash:'<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 9h5.8l.6-9"/>',
+  pen:'<path d="M3 13l.5-3L11 2.5 13.5 5 6 12.5z"/>', repo:'<path d="M3 2.5h8.5A1.5 1.5 0 0 1 13 4v9.5H4.5A1.5 1.5 0 0 1 3 12z"/><path d="M3 12a1.5 1.5 0 0 1 1.5-1.5H13"/>',
+  commit:'<circle cx="8" cy="8" r="3"/><path d="M1.5 8H5M11 8h3.5"/>',
+  branch:'<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5v6M11.5 7c0 3-7 2-7 4"/>',
+  up:'<path d="M8 11V2.5M4.5 6L8 2.5 11.5 6M2.5 13.5h11"/>', clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
+  image:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.2"/><path d="M2.5 12l3.5-3.5 2.5 2.

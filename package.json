@@ -1,0 +1,8 @@
+{
+  "name": "clidex-editor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Мобільний онлайн-редактор сайтів із ШІ-майстром",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

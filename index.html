@@ -287,4 +287,310 @@ const IC = {
   commit:'<circle cx="8" cy="8" r="3"/><path d="M1.5 8H5M11 8h3.5"/>',
   branch:'<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5v6M11.5 7c0 3-7 2-7 4"/>',
   up:'<path d="M8 11V2.5M4.5 6L8 2.5 11.5 6M2.5 13.5h11"/>', clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
-  image:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.2"/><path d="M2.5 12l3.5-3.5 2.5 2.
+  image:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.2"/><path d="M2.5 12l3.5-3.5 2.5 2.5 2-2 3 3"/>',
+  spark:'<path d="M8 1.5l1.5 4.5 4.5 1.5-4.5 1.5L8 13.5 6.5 9 2 7.5 6.5 6z"/>'
+};
+const ic = n => '<svg class="i" viewBox="0 0 16 16" aria-hidden="true">' + IC[n] + '</svg>';
+document.querySelectorAll('[data-ic]').forEach(e => { e.innerHTML = ic(e.dataset.ic) + e.innerHTML; });
+
+/* ================= утиліти ================= */
+function setFrame(id, html) {
+  const old = document.getElementById(id), f = old.cloneNode(false);
+  f.removeAttribute('srcdoc'); old.replaceWith(f); f.srcdoc = html; return f;
+}
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const k in (props || {})) {
+    const v = props[k];
+    if (v === false || v == null) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  kids.flat().forEach(c => { if (c != null && c !== false) e.append(c); });
+  return e;
+}
+let toastT;
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2000); }
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const rid = () => Math.random().toString(16).slice(2, 9);
+const TR = {а:'a',б:'b',в:'v',г:'h',ґ:'g',д:'d',е:'e',є:'ie',ж:'zh',з:'z',и:'y',і:'i',ї:'i',й:'i',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'kh',ц:'ts',ч:'ch',ш:'sh',щ:'shch',ю:'iu',я:'ia',ы:'y',э:'e',ё:'e'};
+function slug(n) {
+  const s = (n || '').toLowerCase().split('').map(c => TR[c] !== undefined ? TR[c] : c).join('')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return s || 'site';
+}
+const title = p => (p.name || '').trim() || 'Без назви';
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function ago(t) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'щойно'; if (s < 3600) return Math.floor(s / 60) + ' хв тому';
+  if (s < 86400) return Math.floor(s / 3600) + ' год тому';
+  return new Date(t).toLocaleDateString('uk-UA');
+}
+const ext = n => n.split('.').pop().toLowerCase();
+const BIN = /^(png|jpe?g|gif|webp|avif|bmp|ico|woff2?|ttf|otf|mp3|wav|ogg|m4a|mp4|webm|pdf)$/;
+const isBin = n => BIN.test(ext(n));
+const isImg = n => /^(png|jpe?g|gif|webp|avif|bmp|ico)$/.test(ext(n));
+const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', avif:'image/avif', bmp:'image/bmp', ico:'image/x-icon',
+  woff:'font/woff', woff2:'font/woff2', ttf:'font/ttf', otf:'font/otf', mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg', m4a:'audio/mp4',
+  mp4:'video/mp4', webm:'video/webm', pdf:'application/pdf' };
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const fmtSize = n => n < 1024 ? n + ' Б' : n < 1048576 ? Math.round(n / 1024) + ' КБ' : (n / 1048576).toFixed(1) + ' МБ';
+const dataSize = s => Math.max(0, Math.round((s.length - s.indexOf(',') - 1) * 3 / 4));
+const isWide = () => matchMedia('(min-width:900px)').matches;
+
+/* висота під клавіатуру */
+let maxH = 0;
+function fit() {
+  const vv = window.visualViewport, hh = vv ? vv.height : innerHeight;
+  maxH = Math.max(maxH, hh);
+  document.documentElement.style.setProperty('--app-h', hh + 'px');
+  document.body.classList.toggle('kb', hh < maxH * 0.75);
+  if (vv && vv.offsetTop) window.scrollTo(0, 0);
+}
+if (window.visualViewport) { visualViewport.addEventListener('resize', fit); visualViewport.addEventListener('scroll', fit); }
+addEventListener('resize', fit);
+addEventListener('orientationchange', () => { maxH = 0; setTimeout(fit, 250); });
+fit();
+
+/* ================= сховище та модель ================= */
+let projects = [];
+let idb = null, savedBlobs = new Set(), storageFail = false, wq = Promise.resolve();
+const hcache = new Map();
+function strHash(str) {
+  let h1 = 0xdeadbeef ^ str.length, h2 = 0x41c6ce57 ^ str.length;
+  for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36) + str.length.toString(36);
+}
+const idbReq = rq => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+function idbOpen() {
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open('clidex', 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('kv'); r.result.createObjectStore('blobs'); };
+      r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+function hydrate(list, blobs) {
+  const dec = f => { for (const k in f) { const v = f[k]; if (typeof v === 'string' && v.startsWith('@blob:')) f[k] = blobs[v.slice(6)] || ''; } };
+  list.forEach(p => { dec(p.files); (p.commits || []).forEach(c => dec(c.files)); });
+  return list;
+}
+async function loadStore() {
+  idb = await idbOpen();
+  if (idb) {
+    try {
+      const tx = idb.transaction(['kv', 'blobs'], 'readonly');
+      const [rec, keys, vals] = await Promise.all([idbReq(tx.objectStore('kv').get('projects')), idbReq(tx.objectStore('blobs').getAllKeys()), idbReq(tx.objectStore('blobs').getAll())]);
+      if (rec && rec.p) {
+        const blobs = {}; keys.forEach((k, i) => { blobs[k] = vals[i]; });
+        projects = hydrate(rec.p, blobs); savedBlobs = new Set(keys); return;
+      }
+    } catch (e) { idb = null; }
+  }
+  try {   // перенесення зі старого сховища / запасний варіант
+    const raw = JSON.parse(localStorage.getItem(KEY));
+    if (Array.isArray(raw)) projects = raw; else if (raw && raw.p) projects = hydrate(raw.p, raw.b || {});
+    if (projects.length && idb) persist();
+  } catch (e) {}
+}
+function persist() {
+  const blobs = {};
+  const enc = files => {
+    const o = {};
+    for (const k in files) {
+      const v = files[k];
+      if (typeof v === 'string' && v.length > 2048 && v.startsWith('data:')) {
+        let id = hcache.get(v); if (!id) { if (hcache.size > 300) hcache.clear(); id = strHash(v); hcache.set(v, id); }
+        blobs[id] = v; o[k] = '@blob:' + id;
+      } else o[k] = v;
+    }
+    return o;
+  };
+  const ps = projects.map(p => Object.assign({}, p, { files: enc(p.files), commits: (p.commits || []).map(c => Object.assign({}, c, { files: enc(c.files) })) }));
+  if (!idb) {
+    try { localStorage.setItem(KEY, JSON.stringify({ v: 2, p: ps, b: blobs })); storageFail = false; return true; }
+    catch (e) { storageFail = true; return false; }
+  }
+  const fresh = Object.keys(blobs).filter(id => !savedBlobs.has(id));
+  const stale = Array.from(savedBlobs).filter(id => !blobs[id]);
+  fresh.forEach(id => savedBlobs.add(id)); stale.forEach(id => savedBlobs.delete(id));
+  const snapshot = { v: 3, p: ps };
+  wq = wq.then(() => new Promise(res => {
+    try {
+      const tx = idb.transaction(['kv', 'blobs'], 'readwrite');
+      fresh.forEach(id => tx.objectStore('blobs').put(blobs[id], id));
+      stale.forEach(id => tx.objectStore('blobs').delete(id));
+      tx.objectStore('kv').put(snapshot, 'projects');
+      tx.oncomplete = () => { storageFail = false; res(); };
+      tx.onerror = tx.onabort = () => { storageFail = true; fresh.forEach(id => savedBlobs.delete(id)); toast('Не вдалося зберегти — немає місця'); res(); };
+    } catch (e) { storageFail = true; res(); }
+  }));
+  return true;
+}
+
+function starter(name) {
+  return {
+    'index.html': '<!doctype html>\n<html lang="uk">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <title>' + esc(name) + '</title>\n  <link rel="stylesheet" href="style.css">\n</head>\n<body>\n  <main class="card">\n    <h1>' + esc(name) + '</h1>\n    <p>Це ваш новий сайт. Змініть код — і він оновиться.</p>\n    <button id="btn">Натисни мене</button>\n    <p id="out"></p>\n  </main>\n  <script src="script.js"><\/script>\n</body>\n</html>\n',
+    'style.css': 'body {\n  margin: 0;\n  min-height: 100vh;\n  display: grid;\n  place-items: center;\n  background: #0d1117;\n  color: #e6edf3;\n  font-family: system-ui, sans-serif;\n}\n\n.card {\n  text-align: center;\n  padding: 32px;\n  border: 1px solid #30363d;\n  border-radius: 12px;\n  background: #161b22;\n}\n\nbutton {\n  padding: 10px 20px;\n  border: 0;\n  border-radius: 8px;\n  background: #238636;\n  color: #fff;\n  font-size: 16px;\n}\n',
+    'script.js': 'let count = 0;\nconst out = document.getElementById("out");\n\ndocument.getElementById("btn").addEventListener("click", () => {\n  count++;\n  out.textContent = "Натискань: " + count;\n  console.log("Натискань:", count);\n});\n'
+  };
+}
+function ensureGit(p) {
+  if (!p.commits || !p.commits.length) p.commits = [{ id: rid(), msg: 'Initial commit', t: p.updated || Date.now(), files: Object.assign({}, p.files) }];
+  if (!p.deploys) p.deploys = [];
+}
+function changes(p) {
+  const head = p.commits[0].files, out = [];
+  Object.keys(p.files).forEach(n => { if (head[n] === undefined) out.push({ n, t: 'A' }); else if (head[n] !== p.files[n]) out.push({ n, t: 'M' }); });
+  Object.keys(head).forEach(n => { if (p.files[n] === undefined) out.push({ n, t: 'D' }); });
+  return out;
+}
+function defaultMsg(ch) {
+  if (!ch.length) return '';
+  if (ch.length === 1) return ({ A: 'Add ', M: 'Update ', D: 'Delete ' })[ch[0].t] + ch[0].n;
+  return 'Update ' + ch.length + ' files';
+}
+function commit(p, msg) {
+  const ch = changes(p); if (!ch.length) return null;
+  const c = { id: rid(), msg: msg || defaultMsg(ch), t: Date.now(), files: Object.assign({}, p.files) };
+  p.commits.unshift(c);
+  const keep = new Set(p.deploys.slice(0, 10).map(d => d.commit));
+  p.commits = p.commits.filter((x, i) => i < 40 || keep.has(x.id));
+  p.updated = Date.now(); persist(); return c;
+}
+const findCommit = (p, id) => p.commits.find(c => c.id === id);
+function topLang(files) {
+  const sz = {}; Object.keys(files).forEach(n => { sz[ext(n)] = (sz[ext(n)] || 0) + files[n].length; });
+  const map = { html: ['HTML', '#e34c26'], htm: ['HTML', '#e34c26'], css: ['CSS', '#a371f7'], js: ['JavaScript', '#f1e05a'], mjs: ['JavaScript', '#f1e05a'] };
+  let best = null, bs = -1; for (const k in sz) if (map[k] && sz[k] > bs) { bs = sz[k]; best = map[k]; }
+  return best;
+}
+
+/* ================= збірка сайту ================= */
+function shim(o) {
+  try { window.localStorage.getItem('x'); } catch (e) {
+    try {
+      var s = {};
+      Object.defineProperty(window, 'localStorage', { value: {
+        getItem: function (k) { return k in s ? s[k] : null; }, setItem: function (k, v) { s[k] = String(v); },
+        removeItem: function (k) { delete s[k]; }, clear: function () { s = {}; }
+      }});
+    } catch (e2) {}
+  }
+  if (o.nav) document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null; if (!a || e.defaultPrevented) return;
+    var hr = a.getAttribute('href');
+    if (!hr || /^(#|[a-z][a-z0-9+.-]*:|\/\/)/i.test(hr) || (a.target && a.target !== '_self')) return;
+    e.preventDefault(); try { parent.postMessage({ clx: 1, t: 'nav', href: hr }, '*'); } catch (x) {}
+  });
+  if (!o.console) return;
+  function fmt(x) { try { if (typeof x === 'string') return x; if (x instanceof Error) return x.stack || x.message; var r = JSON.stringify(x); return r === undefined ? String(x) : r; } catch (e) { return String(x); } }
+  function send(t, a) { try { parent.postMessage({ clx: 1, t: t, a: a.map(fmt) }, '*'); } catch (e) {} }
+  ['log', 'info', 'warn', 'error'].forEach(function (m) {
+    var o2 = console[m];
+    console[m] = function () { send(m, [].slice.call(arguments)); o2.apply(console, arguments); };
+  });
+  addEventListener('error', function (e) { send('error', [e.message + (e.lineno ? ' (рядок ' + e.lineno + ')' : '')]); });
+  addEventListener('unhandledrejection', function (e) { send('error', ['Promise: ' + (e.reason && e.reason.message || e.reason)]); });
+}
+function buildDoc(files, opts) {
+  opts = opts || {};
+  const norm = p => p.replace(/^(?:\.{1,2}\/)*\/?/, '');
+  const first = Object.keys(files).find(k => /\.html?$/i.test(k));
+  const entry = opts.entry && files[opts.entry] != null ? opts.entry : (files['index.html'] != null ? 'index.html' : first);
+  let html = entry ? files[entry] : '<body style="font:16px sans-serif;padding:24px;color:#555">Додайте файл index.html</body>';
+  html = html.replace(/<link\b[^>]*>/gi, m => {
+    const hr = (m.match(/href\s*=\s*["']([^"']+)["']/i) || [])[1], k = hr && norm(hr);
+    return k && /\.css$/i.test(k) && files[k] != null ? '<style>' + files[k] + '</style>' : m;
+  });
+  html = html.replace(/<script\b([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (m, a, s, b) => {
+    const k = norm(s);
+    return files[k] != null ? '<script' + a + b + '>' + files[k].replace(/<\/script/gi, '<\\/script') + '<\/script>' : m;
+  });
+  Object.keys(files).filter(k => isBin(k) && String(files[k]).startsWith('data:')).sort((x, y) => y.length - x.length).forEach(k => {
+    html = html.replace(new RegExp('(["\'(]\\s*)(?:\\.{1,2}\\/)*\\/?' + reEsc(k) + '(?=[\\s"\')?#>])', 'g'), (m, g) => g + files[k]);
+  });
+  const inj = '<script>(' + shim.toString() + ')(' + JSON.stringify({ console: !!opts.console, nav: !!opts.nav }) + ')<\/script>';
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + inj) : inj + html;
+}
+
+/* ================= посилання ================= */
+function b64u(u8) {
+  let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64u(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '=';
+  const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u;
+}
+async function pack(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  if ('CompressionStream' in window) {
+    const buf = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+    return 'z' + b64u(new Uint8Array(buf));
+  }
+  return 'r' + b64u(bytes);
+}
+async function unpack(s) {
+  let bytes = unb64u(s.slice(1));
+  if (s[0] === 'z') bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+async function makeLink(files, name) { return BASE + '#/' + slug(name) + '/' + await pack({ n: name, f: files }); }
+async function copyText(t, inp) {
+  try { await navigator.clipboard.writeText(t); }
+  catch (e) { if (inp) { inp.focus(); inp.select(); } try { document.execCommand('copy'); } catch (e2) {} }
+  toast('Скопійовано');
+}
+function download(files, name) {
+  const url = URL.createObjectURL(new Blob([buildDoc(files, { console: false })], { type: 'text/html' }));
+  const a = h('a', { href: url, download: slug(name) + '.html', style: 'display:none' });
+  document.body.append(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+}
+
+/* ================= файли: ZIP, фото ================= */
+function b64(u8) { let t = ''; for (let i = 0; i < u8.length; i += 0x8000) t += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(t); }
+const bytesToDataUrl = (u8, mime) => 'data:' + (mime || 'application/octet-stream') + ';base64,' + b64(u8);
+function dataToBytes(d) { const t = atob(d.slice(d.indexOf(',') + 1)), u = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u; }
+async function readZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let e = -1; for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) { if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; } }
+  if (e < 0) throw new Error('це не ZIP-архів');
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true), total = 0; const out = [], dec = new TextDecoder();
+  for (let k = 0; k < n && k < 400; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), usize = dv.getUint32(p + 24, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+    if (name.endsWith('/')) continue;
+    total += usize; if (total > 40 * 1048576) throw new Error('архів завеликий (понад 40 МБ)');
+    const ds = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    let data = u8.subarray(ds, ds + csize);
+    if (method === 8) data = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    else if (method !== 0) continue;
+    out.push({ name, data });
+  }
+  return out;
+}
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = -1; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ -1) >>> 0; }
+function makeZip(entries) {
+  const enc = new TextEncoder(), parts = [], cen = [], now = new Date();
+  const dt = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate(), tm = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  let off = 0;
+  entries.forEach(en => {
+    const nm = enc.encode(en.name), crc = crc32(en.data), sz = en.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x800, true); lh.setUint16(10, tm, true); lh.setUint16(12, dt, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true); lh.setUint16(26, nm.length, true);
+    parts.push(new Uint8Array(lh.buffer), nm, en.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x800, true); ch.setUint16(12, tm, true); ch.setUint16(14, dt, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+    cen.push(new Uint8Array(ch.buff

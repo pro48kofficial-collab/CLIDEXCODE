@@ -1156,4 +1156,146 @@ async function aiGenerate(o, onProgress, signal) {
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
-        const
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
+        let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+        if (ev.t === 'progress') onProgress(ev.chars); else if (ev.t === 'error') throw new Error(ev.message); else if (ev.t === 'done') result = ev;
+      }
+    }
+  } finally { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (e) {} }
+  if (!result) throw new Error('З’єднання перервалося до завершення. Спробуйте ще раз.');
+  return result;
+}
+const EXAMPLES = [
+  ['Кав’ярня', 'Лендінг кав’ярні «Зерно» в Києві: теплий затишний стиль, меню з цінами, наші бариста, графік роботи, карта проїзду та кнопка «Забронювати столик».'],
+  ['Портфоліо', 'Сайт-портфоліо фотографа: мінімалістичний чорно-білий дизайн, велика галерея з категоріями, сторінка «Про мене» та форма для замовлення зйомки.'],
+  ['Візитка майстра', 'Сайт-візитка майстра з ремонту техніки: послуги й ціни, переваги, відгуки клієнтів, велика кнопка «Подзвонити» та форма заявки.']
+];
+function openAI() {
+  let imgs = [], busy = false, ctrl = null;
+  const desc = h('textarea', { class: 'inp', rows: '6', maxlength: '4000', placeholder: 'Опишіть сайт: про що він, для кого, який стиль, які розділи потрібні…' });
+  const nameInp = h('input', { class: 'inp', maxlength: '60', placeholder: 'Авто — ШІ придумає', autocomplete: 'off' });
+  const pwInp = h('input', { class: 'inp', type: 'password', placeholder: 'Пароль', autocomplete: 'off' });
+  try { pwInp.value = localStorage.getItem(PW_KEY) || ''; } catch (e) {}
+  const pwBox = h('div', { hidden: true }, h('label', {}, 'Пароль доступу до ШІ'), pwInp);
+  const chips = h('div', { class: 'chips' });
+  const photoIn = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const status = h('p', { class: 'muted sm' }, 'Перевіряємо сервер ШІ…');
+  const warn = h('div', { class: 'warn', hidden: true });
+  const go = h('button', { class: 'btn primary wide', disabled: true, onclick: start }, [h('span', { html: ic('spark') }), 'Створити і задеплоїти']);
+  const addBtn = h('button', { type: 'button', class: 'btn', onclick: () => photoIn.click() }, [h('span', { html: ic('image') }), 'Додати фото']);
+  const names = ['Надсилаємо опис', 'ШІ пише код', 'Збираємо проєкт', 'Коміт і деплой'];
+  const rows = names.map(t => h('div', { class: 'st' }, [h('span', { class: 'dot' }), h('span', {}, t)]));
+  const counter = h('span', { class: 'muted sm' });
+  const stepsBox = h('div', { class: 'steps', hidden: true }, rows, counter);
+  function setStep(i) {
+    rows.forEach((r, k) => { r.className = 'st' + (k < i ? ' done' : k === i ? ' on' : ''); const m = r.firstChild; m.className = k < i ? 'ck' : k === i ? 'spin' : 'dot'; m.textContent = k < i ? '✓' : ''; });
+  }
+  function lock(v) { busy = v; [desc, nameInp, pwInp].forEach(x => { x.disabled = v; }); addBtn.disabled = v; go.disabled = v; }
+  function showWarn(t) { warn.textContent = t; warn.hidden = !t; }
+  function renderChips() {
+    chips.replaceChildren(...imgs.map(i => h('div', { class: 'chip' }, h('img', { src: i.data, alt: i.name }),
+      h('button', { type: 'button', 'aria-label': 'Прибрати', onclick: () => { imgs = imgs.filter(x => x !== i); renderChips(); } }, '×'))));
+  }
+  photoIn.addEventListener('change', async () => {
+    const list = Array.from(photoIn.files); photoIn.value = '';
+    for (const f of list) {
+      if (imgs.length >= 12) { toast('Максимум 12 фото'); break; }
+      const e = isImg(f.name) ? ext(f.name) : ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[f.type];
+      if (!e) { toast('Формат не підтримується: ' + f.name); continue; }
+      let base = slug(f.name.replace(/\.[^.]+$/, '')); if (base === 'site') base = 'photo';
+      let nm = base + '.' + e, k = 2; while (imgs.some(i => i.name === nm)) nm = base + '-' + (k++) + '.' + e;
+      const r = await prepImage(f, nm); imgs.push({ name: nm, data: r.data, w: r.w, h: r.h }); renderChips();
+    }
+  });
+  async function start() {
+    const text = desc.value.trim();
+    if (text.length < 10) { toast('Опишіть сайт детальніше'); return desc.focus(); }
+    try { if (pwInp.value) localStorage.setItem(PW_KEY, pwInp.value); } catch (e) {}
+    showWarn(''); lock(true); stepsBox.hidden = false; counter.textContent = ''; setStep(0);
+    ctrl = new AbortController(); sheetCancel = () => { if (ctrl) ctrl.abort(); };
+    try {
+      await wait(250); setStep(1);
+      const res = await aiGenerate({ prompt: text, name: nameInp.value.trim(), password: pwInp.value, images: imgs.map(i => ({ name: i.name, w: i.w, h: i.h })) },
+        n => { counter.textContent = 'Написано ' + n.toLocaleString('uk-UA') + ' символів коду…'; }, ctrl.signal);
+      setStep(2);
+      const files = Object.assign({}, res.files); imgs.forEach(i => { files[i.name] = i.data; });
+      const nm = (res.name || nameInp.value.trim() || 'Новий сайт').slice(0, 60);
+      const p = { id: rid() + rid(), name: nm, files, updated: Date.now(), deploys: [],
+        commits: [{ id: rid(), msg: 'Створено ШІ-майстром', t: Date.now(), files: Object.assign({}, files) }] };
+      projects.push(p); const saved = persist();
+      setStep(3);
+      const link = await doDeploy(p, () => {}, false);
+      sheetCancel = null; renderHome();
+      const extra = [];
+      if (res.truncated) extra.push('ШІ обірвав відповідь — частина сайту може бути неповною. Спробуйте простіший опис.');
+      if (!saved) extra.push('Не вдалося зберегти проєкт у браузері (мало місця).');
+      if (link.length > 60000) extra.push('Посилання довге (' + fmtSize(link.length) + '): месенджери можуть його обрізати. Завантажте ZIP у вікні «Деплой».');
+      showReady(p, link, extra);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      stepsBox.hidden = true; lock(false); sheetCancel = null;
+      if (e.status === 401) { pwBox.hidden = false; try { localStorage.removeItem(PW_KEY); } catch (x) {} }
+      showWarn(e.message || 'Не вдалося створити сайт');
+    }
+  }
+  const ex = h('div', { class: 'ex' }, EXAMPLES.map(x => h('button', { type: 'button', class: 'btn sm', onclick: () => { desc.value = x[1]; desc.focus(); } }, x[0])));
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('spark') }), 'ШІ-майстер']),
+    status, warn,
+    h('label', {}, 'Опишіть сайт'), desc, ex,
+    h('label', {}, 'Назва сайту (необов’язково)'), nameInp,
+    h('label', {}, 'Фото для сайту (необов’язково)'), h('div', {}, addBtn), chips, photoIn,
+    pwBox,
+    h('div', { class: 'row' }, go),
+    stepsBox));
+  aiHealth().then(j => {
+    if (!j) { status.textContent = ''; showWarn('ШІ працює лише коли сайт запущено через сервер (Render → Web Service з файлом server.js) і задано ANTHROPIC_API_KEY. Зараз сервера ШІ не знайдено.'); return; }
+    if (!j.ai) { status.textContent = ''; showWarn('На сервері не задано змінну ANTHROPIC_API_KEY.'); return; }
+    status.textContent = 'ШІ готовий. Створення займає приблизно 30–90 секунд.'; pwBox.hidden = !j.auth; if (!busy) go.disabled = false;
+  });
+}
+function showReady(p, link, extra) {
+  const frame = h('iframe', { sandbox: 'allow-scripts', title: 'Попередній перегляд', style: 'width:100%;height:240px;border:1px solid var(--line);border-radius:8px;background:#fff' });
+  frame.srcdoc = buildDoc(p.files, {});
+  const urlInp = h('input', { class: 'inp mono', readonly: true, value: link, style: 'font-size:12px', onfocus: e => e.target.select() });
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('spark') }), title(p), h('span', { class: 'pill live' }, [h('span', { class: 'dot' }), 'Live'])]),
+    h('div', { class: 'ok' }, 'Сайт створено, закомічено і задеплоєно автоматично.'),
+    extra.map(t => h('div', { class: 'warn' }, t)),
+    h('div', { style: 'margin-top:12px' }, frame),
+    h('label', {}, 'Адреса сайту'), urlInp,
+    h('div', { class: 'row' },
+      h('a', { class: 'btn primary', href: link, target: '_blank', rel: 'noopener' }, 'Відкрити сайт'),
+      h('button', { class: 'btn', onclick: () => copyText(link, urlInp) }, 'Копіювати')),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn', onclick: () => { closeSheet(); openProject(p.id); } }, 'Редагувати проєкт'),
+      h('button', { class: 'btn', onclick: () => { closeSheet(); openAI(); } }, 'Створити ще'))));
+}
+$('#aiBtn').onclick = openAI; $('#aiHero').onclick = openAI;
+
+/* ================= маршрути ================= */
+async function route() {
+  const m = location.hash.match(/^#\/([^\/]*)\/(.+)$/);
+  if (m) {
+    showView('viewer');
+    try {
+      const d = await unpack(m[2]);
+      document.title = d.n || 'Сайт';
+      vFiles = d.f; vEntry = null; setFrame('vframe', buildDoc(d.f, { console: false, nav: true }));
+      $('#badge').href = BASE;
+    } catch (e) {
+      setFrame('vframe', '<body style="font:16px sans-serif;padding:24px;background:#0d1117;color:#e6edf3">Не вдалося відкрити посилання. Воно пошкоджене або неповне.</body>');
+    }
+  } else { document.title = 'Clidex Editor'; showView('home'); renderHome(); }
+}
+$('#badgeX').onclick = e => { e.preventDefault(); e.stopPropagation(); $('#badge').hidden = true; };
+addEventListener('popstate', () => { if (!$('#project').hidden || !location.hash) goHome(); });
+addEventListener('hashchange', route);
+const ready = loadStore();
+Promise.race([ready, wait(2500)]).then(route);
+ready.then(() => { if (!$('#home').hidden) renderHome(); });
+})();
+</script>
+</body>
+  </html>
+  

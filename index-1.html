@@ -1,0 +1,1487 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#161b22">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Clidex Editor</title>
+<style>
+  :root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--line:#30363d;--fg:#e6edf3;--mute:#8b949e;
+    --blue:#58a6ff;--green:#238636;--greenh:#2ea043;--live:#3fb950;--red:#f85149;--yellow:#d29922;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  [hidden]{display:none!important}
+  button{font:inherit;color:inherit}
+  #app{height:var(--app-h,100dvh);position:relative;overflow:hidden}
+  .view{position:absolute;inset:0;display:flex;flex-direction:column}
+  .grow{flex:1}
+  .muted{color:var(--mute)} .sm{font-size:12px} .mono{font-family:var(--mono)}
+  svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+  .top{display:flex;align-items:center;gap:8px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));
+    background:var(--bg2);border-bottom:1px solid var(--line);flex:none}
+  .logo{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--bg3);border:1px solid var(--line)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--bg3);color:var(--fg);
+    border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap;min-height:32px}
+  .btn:active{filter:brightness(1.25)}
+  .btn.primary{background:var(--green);border-color:rgba(240,246,252,.1);color:#fff}
+  .btn.danger{color:var(--red)}
+  .btn.sm{padding:2px 10px;font-size:12px;min-height:26px}
+  .btn.wide{width:100%;min-height:40px;font-size:15px}
+  .btn[disabled]{opacity:.5;pointer-events:none}
+  .icon{display:grid;place-items:center;width:36px;height:36px;background:transparent;border:1px solid transparent;
+    border-radius:6px;color:var(--mute);cursor:pointer;flex:none;padding:0}
+  .icon:active{background:var(--bg3);color:var(--fg)}
+  .pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:0 8px;
+    font-size:12px;font-weight:500;color:var(--mute);line-height:20px;white-space:nowrap}
+  .pill.live{color:var(--live);border-color:#238636}
+  .pill.build{color:var(--yellow);border-color:#9e6a03}
+  .pill.fail{color:var(--red);border-color:#da3633}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;flex:none}
+
+  .scroll{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
+  .wrap{max-width:760px;margin:0 auto;padding:16px}
+  .h1{font-size:20px;font-weight:600;margin:4px 0 12px}
+  .box{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--bg)}
+  .box-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);font-size:13px;min-width:0}
+  .box-head .msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list{list-style:none;margin:0;padding:0}
+  .list>li{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid var(--line);cursor:pointer}
+  .list>li:first-child{border-top:0}
+  .list>li:active{background:var(--bg2)}
+  .list>li.active{background:#1f6feb26;box-shadow:inset 3px 0 0 var(--blue)}
+  .list .meta{flex:1;min-width:0}
+  .list .nm{color:var(--blue);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list .sub{color:var(--mute);font-size:12px}
+  .empty{padding:32px 16px;text-align:center;color:var(--mute);cursor:default!important;display:block!important}
+  .lang{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:baseline}
+  .tag{display:inline-block;width:18px;text-align:center;border-radius:4px;font:600 11px/18px var(--mono);margin-right:6px}
+  .tag.M{color:var(--yellow);background:#d2992226}.tag.A{color:var(--live);background:#3fb95026}.tag.D{color:var(--red);background:#f8514926}
+  code.h{font:12px var(--mono);background:var(--bg3);border-radius:4px;padding:1px 6px;color:var(--mute)}
+
+  .name{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px dashed var(--line);color:var(--blue);
+    font:inherit;font-size:16px;font-weight:600;padding:4px 2px;outline:none}
+  .name:focus{border-bottom-color:var(--blue)}
+
+  .workspace{flex:1;min-height:0;display:flex;flex-direction:column}
+  .pane{display:none;flex:1;min-height:0;flex-direction:column;min-width:0}
+  .workspace[data-pane=files] #filesPane,.workspace[data-pane=code] #codePane,.workspace[data-pane=preview] #previewPane{display:flex}
+  #filesPane{overflow:auto}
+  #filesPane .inner{padding:12px}
+  .filebar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);flex:none;font-size:13px}
+
+  /* власний редактор: textarea + підсвітка */
+  .ed{flex:1;min-height:0;display:flex;position:relative;background:var(--bg);overflow:hidden}
+  .gutter{flex:none;overflow:hidden;border-right:1px solid var(--line);color:#6e7681;text-align:right;user-select:none;-webkit-user-select:none}
+  #nums{padding:10px 8px 120px;white-space:pre;font:13px/20px var(--mono)}
+  .stack{position:relative;flex:1;min-width:0}
+  #hl,#ta{position:absolute;inset:0;margin:0;border:0;padding:10px 12px 120px 12px;font:13px/20px var(--mono);
+    font-variant-ligatures:none;tab-size:2;-moz-tab-size:2;white-space:pre;letter-spacing:0;overflow:auto;border-radius:0}
+  #hl{overflow:hidden;pointer-events:none;color:var(--fg);padding-right:80px}
+  #hl code{font:inherit}
+  #ta{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:#e6edf3;resize:none;outline:none;
+    padding-right:40px;-webkit-appearance:none;appearance:none;z-index:1;-webkit-text-size-adjust:100%}
+  #ta::selection{background:#1f6feb66;-webkit-text-fill-color:transparent}
+  .t-c{color:#8b949e;font-style:italic}.t-s{color:#a5d6ff}.t-n{color:#79c0ff}.t-k{color:#ff7b72}.t-a{color:#79c0ff}
+  .t-f{color:#d2a8ff}.t-tg{color:#7ee787}.t-at{color:#79c0ff}.t-p{color:#79c0ff}
+  .keys{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:var(--bg2);border-top:1px solid var(--line);flex:none;scrollbar-width:none}
+  .keys::-webkit-scrollbar{display:none}
+  .keys button{flex:none;min-width:38px;height:36px;background:var(--bg3);border:1px solid var(--line);
+    border-radius:6px;font:600 15px var(--mono);padding:0 10px;touch-action:manipulation}
+  .keys button:active{background:var(--blue);color:#000}
+
+  .urlbar{display:flex;align-items:center;gap:4px;padding:6px 8px;background:var(--bg2);border-bottom:1px solid var(--line);flex:none}
+  .url{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;
+    color:var(--mute);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #frame{flex:1;min-height:0;width:100%;border:0;background:#fff}
+  .console{flex:none;max-height:40%;display:flex;flex-direction:column;border-top:1px solid var(--line);background:var(--bg)}
+  .console-head{display:flex;align-items:center;justify-content:space-between;padding:4px 10px;background:var(--bg2);font-size:12px;font-weight:600}
+  #conLines{overflow:auto;padding:4px 10px;font:12px/1.5 var(--mono)}
+  #conLines div{padding:2px 0;border-bottom:1px solid #21262d;white-space:pre-wrap;word-break:break-word}
+  #conLines .error{color:var(--red)} #conLines .warn{color:var(--yellow)}
+  #conCount{background:var(--red);color:#fff;border-radius:999px;font-size:10px;padding:0 5px;margin-left:2px}
+
+  .bottomnav{display:flex;flex:none;background:var(--bg2);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+  .bottomnav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 6px;background:none;border:0;
+    color:var(--mute);font-size:11px;cursor:pointer}
+  .bottomnav button.active{color:var(--fg);box-shadow:inset 0 2px 0 #f78166}
+  body.kb .bottomnav{display:none}
+
+  #viewer{position:absolute;inset:0;background:#fff}
+  #viewer iframe{width:100%;height:100%;border:0}
+  .badge{position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:6px;
+    background:#161b22ee;color:#e6edf3;border:1px solid #30363d;border-radius:999px;padding:5px 6px 5px 12px;font-size:12px;
+    text-decoration:none;box-shadow:0 4px 14px #0006}
+  .badge b{font-weight:600}
+  .badge button{background:none;border:0;color:#8b949e;font-size:16px;line-height:1;padding:0 6px;cursor:pointer}
+
+  .modal{position:fixed;inset:0;background:#010409b3;display:flex;align-items:flex-end;justify-content:center;z-index:50}
+  .sheet{width:100%;max-width:560px;background:var(--bg2);border:1px solid var(--line);border-radius:12px 12px 0 0;
+    padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:92%;overflow:auto;-webkit-overflow-scrolling:touch}
+  .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 12px}
+  .sheet h3{margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sheet h4{margin:16px 0 8px;font-size:13px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .sheet label{display:block;margin:12px 0 4px;font-size:12px;color:var(--mute)}
+  .sheet p{margin:6px 0}
+  .inp{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 12px;
+    font:inherit;font-size:16px;outline:none}
+  .inp:focus{border-color:var(--blue);box-shadow:0 0 0 3px #1f6feb55}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .row .btn{flex:1}
+  .row.end{justify-content:flex-end}.row.end .btn{flex:none}
+  .term{background:#000;border:1px solid var(--line);border-radius:6px;padding:10px;font:12px/1.6 var(--mono);color:#c9d1d9;
+    max-height:190px;overflow:auto;margin-top:12px;white-space:pre-wrap;word-break:break-word}
+  .term .arrow{color:var(--live)} .term .err{color:var(--red)}
+  .item{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+  .item:first-of-type{border-top:0}
+  .item .meta{flex:1;min-width:0}
+  .item .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;
+    border-radius:8px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90%;text-align:center}
+  #toast.show{opacity:1}
+
+  .hero{display:flex;align-items:center;gap:12px;padding:14px;margin-bottom:14px;border:1px solid #1f6feb66;border-radius:8px;
+    background:linear-gradient(135deg,#1f6feb22,#8957e522);cursor:pointer;width:100%;text-align:left}
+  .hero:active{filter:brightness(1.15)}
+  .hero .ico{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#1f6feb;color:#fff;flex:none}
+  .hero .ico svg{width:20px;height:20px}
+  .hero b{display:block;font-size:15px}
+  .hero span.s{display:block;color:var(--mute);font-size:12px;margin-top:2px}
+  textarea.inp{resize:vertical;min-height:120px;font-family:inherit;line-height:1.45}
+  .binview{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;
+    background:conic-gradient(#161b22 25%,#0d1117 0 50%,#161b22 0 75%,#0d1117 0) 0 0/20px 20px}
+  .binview img{max-width:100%;max-height:65%;object-fit:contain;border:1px solid var(--line);border-radius:6px;background:#0008}
+  .binview .info{color:var(--mute);font-size:12px;text-align:center;background:#0d1117dd;padding:6px 12px;border-radius:6px}
+  .thumb{width:22px;height:22px;border-radius:4px;object-fit:cover;flex:none;border:1px solid var(--line)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .chip{position:relative;width:56px;height:56px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .chip img{width:100%;height:100%;object-fit:cover;display:block}
+  .chip button{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;border:0;background:#000b;color:#fff;font-size:14px;line-height:20px;padding:0}
+  .steps{margin-top:14px}
+  .steps .st{display:flex;gap:10px;align-items:center;padding:5px 0;color:var(--mute)}
+  .steps .st.on{color:var(--fg)} .steps .st.done{color:var(--live)}
+  .steps .ck{width:14px;text-align:center;flex:none}
+  .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;flex:none}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .warn{border:1px solid #9e6a03;background:#d2992214;color:var(--yellow);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:10px}
+  .ok{border:1px solid #238636;background:#23863614;color:var(--live);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:10px}
+  .ex{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  #cloudBtn{position:relative}
+  #cloudBtn::after{content:'';position:absolute;right:6px;top:6px;width:9px;height:9px;border-radius:50%;background:transparent;border:2px solid var(--bg2)}
+  #cloudBtn.s-ok::after{background:var(--live)} #cloudBtn.s-syncing::after{background:var(--yellow)} #cloudBtn.s-error::after{background:var(--red)}
+  #cloudBtn.s-ok,#cloudBtn.s-syncing{color:var(--fg)}
+  .slugrow{display:flex;align-items:stretch}
+  .slugrow .pre{display:flex;align-items:center;padding:0 10px;background:var(--bg3);border:1px solid var(--line);border-right:0;border-radius:6px 0 0 6px;color:var(--mute);font:13px var(--mono);white-space:nowrap}
+  .slugrow input{border-radius:0 6px 6px 0;min-width:0;font-family:var(--mono);font-size:14px}
+  @media(min-width:900px){
+    .workspace{flex-direction:row}
+    .pane{display:flex!important}
+    #filesPane{flex:0 0 290px;border-right:1px solid var(--line)}
+    #codePane{flex:1;border-right:1px solid var(--line)}
+    #previewPane{flex:1}
+    .bottomnav{display:none}
+    .modal{align-items:center}.sheet{border-radius:12px;padding-top:16px}.grab{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Головна: список проєктів -->
+  <section id="home" class="view">
+    <header class="top">
+      <span class="logo" data-ic="code"></span><strong>Clidex Editor</strong>
+      <span class="grow"></span>
+      <button class="icon" id="cloudBtn" aria-label="Хмарне збереження" data-ic="cloud"></button>
+      <button class="btn" id="aiBtn"><span data-ic="spark"></span>ШІ</button>
+      <button class="btn primary" id="newBtn"><span data-ic="plus"></span>Новий</button>
+    </header>
+    <div class="scroll"><div class="wrap">
+      <button class="hero" id="aiHero"><span class="ico" data-ic="spark"></span><span><b>ШІ-майстер</b><span class="s">Опишіть сайт — ШІ напише код, збере проєкт і задеплоїть</span></span></button>
+      <h1 class="h1">Ваші проєкти</h1>
+      <input class="inp" id="q" placeholder="Знайти проєкт…" autocomplete="off" style="margin-bottom:12px">
+      <div class="box"><ul class="list" id="projList"></ul></div>
+    </div></div>
+  </section>
+
+  <!-- Проєкт -->
+  <section id="project" class="view" hidden>
+    <header class="top">
+      <button class="icon" id="back" aria-label="Назад" data-ic="back"></button>
+      <input class="name" id="nameInput" maxlength="60" placeholder="Назва сайту" autocomplete="off" spellcheck="false" aria-label="Назва сайту">
+      <button class="icon" id="commitsBtn" aria-label="Коміти" data-ic="commit"></button>
+      <button class="btn primary" id="deployBtn"><span data-ic="up"></span>Деплой</button>
+    </header>
+    <div class="workspace" id="workspace" data-pane="files">
+      <aside class="pane" id="filesPane"><div class="inner">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span class="pill"><span data-ic="branch"></span>main</span>
+          <span class="grow"></span>
+          <button class="btn sm" id="commitCount"><span data-ic="clock"></span><span id="commitCountTxt"></span></button>
+        </div>
+        <div class="box">
+          <div class="box-head" id="commitBar"></div>
+          <ul class="list" id="fileList"></ul>
+        </div>
+        <div class="row">
+          <button class="btn" id="addFile"><span data-ic="plus"></span>Новий файл</button>
+          <button class="btn" id="addPhoto"><span data-ic="image"></span>Фото</button>
+          <button class="btn" id="addUpload"><span data-ic="up"></span>Файли / ZIP</button>
+        </div>
+        <input type="file" id="inPhoto" accept="image/*" multiple hidden>
+        <input type="file" id="inFiles" multiple hidden>
+      </div></aside>
+      <div class="pane" id="codePane">
+        <div class="filebar"><span data-ic="file"></span><strong id="curFile"></strong><span class="grow"></span><span class="muted sm" id="saveState">Збережено</span><span class="muted sm" id="cloudMini" style="margin-left:8px"></span></div>
+        <div class="ed" id="ed">
+          <div class="gutter" id="gutter"><div id="nums"></div></div>
+          <div class="stack">
+            <pre id="hl" aria-hidden="true"><code id="hlc"></code></pre>
+            <textarea id="ta" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" aria-label="Код"></textarea>
+          </div>
+        </div>
+        <div class="keys" id="keys"></div>
+        <div class="binview" id="binView" hidden></div>
+      </div>
+      <div class="pane" id="previewPane">
+        <div class="urlbar">
+          <button class="icon" id="reload" aria-label="Оновити" data-ic="refresh"></button>
+          <div class="url" id="urlText"></div>
+          <button class="icon" id="conBtn" aria-label="Консоль"><span data-ic="term"></span><span id="conCount" hidden></span></button>
+          <button class="icon" id="openTab" aria-label="Відкрити у вкладці" data-ic="ext"></button>
+        </div>
+        <iframe id="frame" title="Перегляд" sandbox="allow-scripts allow-modals allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+        <div class="console" id="console" hidden>
+          <div class="console-head"><span>Консоль</span><button class="btn sm" id="conClear">Очистити</button></div>
+          <div id="conLines"></div>
+        </div>
+      </div>
+    </div>
+    <nav class="bottomnav">
+      <button data-go="files" class="active"><span data-ic="folder"></span>Файли</button>
+      <button data-go="code"><span data-ic="code"></span>Код</button>
+      <button data-go="preview"><span data-ic="play"></span>Перегляд</button>
+    </nav>
+  </section>
+
+  <!-- Сайт за посиланням -->
+  <section id="viewer" hidden>
+    <iframe id="vframe" title="Сайт" sandbox="allow-scripts allow-modals allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <a class="badge" id="badge" href="#"><span data-ic="code"></span><b>Clidex Editor</b><button id="badgeX" aria-label="Закрити">×</button></a>
+  </section>
+
+  <div class="modal" id="modal" hidden><div class="sheet" id="sheet"></div></div>
+  <div class="modal" id="modal2" hidden style="z-index:70"><div class="sheet" id="sheet2"></div></div>
+  <div id="toast"></div>
+</div>
+
+<script>
+(function () {
+'use strict';
+const $ = s => document.querySelector(s);
+const KEY = 'clidex.projects.v1';
+const BASE = location.href.split('#')[0];
+
+/* ================= іконки ================= */
+const IC = {
+  code:'<path d="M5.5 4L1.5 8l4 4M10.5 4l4 4-4 4"/>', plus:'<path d="M8 2.5v11M2.5 8h11"/>',
+  back:'<path d="M10 2.5L4.5 8 10 13.5"/>', play:'<path d="M4.5 3v10l8-5z"/>',
+  file:'<path d="M4 1.5h5l3.5 3.5v9.5H4z"/><path d="M9 1.5V5h3.5"/>', folder:'<path d="M1.5 3.5h4.5l1.5 1.5h7v8h-13z"/>',
+  refresh:'<path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.5v3h-3"/>', term:'<path d="M2 3.5h12v9H2zM4.5 6.5l2 1.5-2 1.5M8 10h3"/>',
+  ext:'<path d="M9 2.5h4.5V7M13.5 2.5l-6 6M12 9.5v4H2.5V4h4"/>', trash:'<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 9h5.8l.6-9"/>',
+  pen:'<path d="M3 13l.5-3L11 2.5 13.5 5 6 12.5z"/>', repo:'<path d="M3 2.5h8.5A1.5 1.5 0 0 1 13 4v9.5H4.5A1.5 1.5 0 0 1 3 12z"/><path d="M3 12a1.5 1.5 0 0 1 1.5-1.5H13"/>',
+  commit:'<circle cx="8" cy="8" r="3"/><path d="M1.5 8H5M11 8h3.5"/>',
+  branch:'<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5v6M11.5 7c0 3-7 2-7 4"/>',
+  up:'<path d="M8 11V2.5M4.5 6L8 2.5 11.5 6M2.5 13.5h11"/>', clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
+  image:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.2"/><path d="M2.5 12l3.5-3.5 2.5 2.5 2-2 3 3"/>',
+  spark:'<path d="M8 1.5l1.5 4.5 4.5 1.5-4.5 1.5L8 13.5 6.5 9 2 7.5 6.5 6z"/>',
+  cloud:'<path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4 4 0 0 0 4.2 6.6 3 3 0 0 0 4.5 12.5z"/>'
+};
+const ic = n => '<svg class="i" viewBox="0 0 16 16" aria-hidden="true">' + IC[n] + '</svg>';
+document.querySelectorAll('[data-ic]').forEach(e => { e.innerHTML = ic(e.dataset.ic) + e.innerHTML; });
+
+/* ================= утиліти ================= */
+function setFrame(id, html) {
+  const old = document.getElementById(id), f = old.cloneNode(false);
+  f.removeAttribute('srcdoc'); old.replaceWith(f); f.srcdoc = html; return f;
+}
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const k in (props || {})) {
+    const v = props[k];
+    if (v === false || v == null) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  kids.flat().forEach(c => { if (c != null && c !== false) e.append(c); });
+  return e;
+}
+let toastT;
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2000); }
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const rid = () => Math.random().toString(16).slice(2, 9);
+const TR = {а:'a',б:'b',в:'v',г:'h',ґ:'g',д:'d',е:'e',є:'ie',ж:'zh',з:'z',и:'y',і:'i',ї:'i',й:'i',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'kh',ц:'ts',ч:'ch',ш:'sh',щ:'shch',ю:'iu',я:'ia',ы:'y',э:'e',ё:'e'};
+function slug(n) {
+  const s = (n || '').toLowerCase().split('').map(c => TR[c] !== undefined ? TR[c] : c).join('')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return s || 'site';
+}
+const title = p => (p.name || '').trim() || 'Без назви';
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function ago(t) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'щойно'; if (s < 3600) return Math.floor(s / 60) + ' хв тому';
+  if (s < 86400) return Math.floor(s / 3600) + ' год тому';
+  return new Date(t).toLocaleDateString('uk-UA');
+}
+const ext = n => n.split('.').pop().toLowerCase();
+const BIN = /^(png|jpe?g|gif|webp|avif|bmp|ico|woff2?|ttf|otf|mp3|wav|ogg|m4a|mp4|webm|pdf)$/;
+const isBin = n => BIN.test(ext(n));
+const isImg = n => /^(png|jpe?g|gif|webp|avif|bmp|ico)$/.test(ext(n));
+const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', avif:'image/avif', bmp:'image/bmp', ico:'image/x-icon',
+  woff:'font/woff', woff2:'font/woff2', ttf:'font/ttf', otf:'font/otf', mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg', m4a:'audio/mp4',
+  mp4:'video/mp4', webm:'video/webm', pdf:'application/pdf' };
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const fmtSize = n => n < 1024 ? n + ' Б' : n < 1048576 ? Math.round(n / 1024) + ' КБ' : (n / 1048576).toFixed(1) + ' МБ';
+const dataSize = s => Math.max(0, Math.round((s.length - s.indexOf(',') - 1) * 3 / 4));
+const isWide = () => matchMedia('(min-width:900px)').matches;
+
+/* висота під клавіатуру */
+let maxH = 0;
+function fit() {
+  const vv = window.visualViewport, hh = vv ? vv.height : innerHeight;
+  maxH = Math.max(maxH, hh);
+  document.documentElement.style.setProperty('--app-h', hh + 'px');
+  document.body.classList.toggle('kb', hh < maxH * 0.75);
+  if (vv && vv.offsetTop) window.scrollTo(0, 0);
+}
+if (window.visualViewport) { visualViewport.addEventListener('resize', fit); visualViewport.addEventListener('scroll', fit); }
+addEventListener('resize', fit);
+addEventListener('orientationchange', () => { maxH = 0; setTimeout(fit, 250); });
+fit();
+
+/* ================= сховище та модель ================= */
+let projects = [];
+let caps = null, delLog = {}, syncCode = '', syncing = false, syncT = null, lastSyncSig = '', syncState = 'off', syncErr = '', lastSyncAt = 0;
+const PW_KEY = 'clidex.aipw', SYNC_KEY = 'clidex.sync';
+try { syncCode = localStorage.getItem(SYNC_KEY) || ''; } catch (e) {}
+if (syncCode) syncState = 'idle';
+let idb = null, savedBlobs = new Set(), storageFail = false, wq = Promise.resolve();
+const hcache = new Map();
+function strHash(str) {
+  let h1 = 0xdeadbeef ^ str.length, h2 = 0x41c6ce57 ^ str.length;
+  for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36) + str.length.toString(36);
+}
+const idbReq = rq => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+function idbOpen() {
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open('clidex', 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('kv'); r.result.createObjectStore('blobs'); };
+      r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+function hydrate(list, blobs) {
+  const dec = f => { for (const k in f) { const v = f[k]; if (typeof v === 'string' && v.startsWith('@blob:')) f[k] = blobs[v.slice(6)] || ''; } };
+  list.forEach(p => { dec(p.files); (p.commits || []).forEach(c => dec(c.files)); });
+  return list;
+}
+async function loadStore() {
+  idb = await idbOpen();
+  if (idb) {
+    try {
+      const tx = idb.transaction(['kv', 'blobs'], 'readonly');
+      const [rec, keys, vals] = await Promise.all([idbReq(tx.objectStore('kv').get('projects')), idbReq(tx.objectStore('blobs').getAllKeys()), idbReq(tx.objectStore('blobs').getAll())]);
+      if (rec && rec.p) {
+        const blobs = {}; keys.forEach((k, i) => { blobs[k] = vals[i]; });
+        projects = hydrate(rec.p, blobs); savedBlobs = new Set(keys); delLog = rec.del || {}; return;
+      }
+    } catch (e) { idb = null; }
+  }
+  try {   // перенесення зі старого сховища / запасний варіант
+    const raw = JSON.parse(localStorage.getItem(KEY));
+    if (Array.isArray(raw)) projects = raw; else if (raw && raw.p) { projects = hydrate(raw.p, raw.b || {}); delLog = raw.del || {}; }
+    if (projects.length && idb) persist();
+  } catch (e) {}
+}
+function bid(v) { let id = hcache.get(v); if (!id) { if (hcache.size > 300) hcache.clear(); id = strHash(v); hcache.set(v, id); } return id; }
+function encodeProjects() {          // великі файли виносимо в окремі «блоби» (спільні для всіх комітів)
+  const blobs = {};
+  const enc = files => {
+    const o = {};
+    for (const k in files) {
+      const v = files[k];
+      if (typeof v === 'string' && v.length > 2048 && v.startsWith('data:')) { const id = bid(v); blobs[id] = v; o[k] = '@blob:' + id; }
+      else o[k] = v;
+    }
+    return o;
+  };
+  const ps = projects.map(p => Object.assign({}, p, { files: enc(p.files), commits: (p.commits || []).map(c => Object.assign({}, c, { files: enc(c.files) })) }));
+  return { ps, blobs };
+}
+function persist() {
+  const { ps, blobs } = encodeProjects();
+  if (!idb) {
+    try { localStorage.setItem(KEY, JSON.stringify({ v: 2, p: ps, b: blobs, del: delLog })); storageFail = false; scheduleSync(); return true; }
+    catch (e) { storageFail = true; return false; }
+  }
+  const fresh = Object.keys(blobs).filter(id => !savedBlobs.has(id));
+  const stale = Array.from(savedBlobs).filter(id => !blobs[id]);
+  fresh.forEach(id => savedBlobs.add(id)); stale.forEach(id => savedBlobs.delete(id));
+  const snapshot = { v: 3, p: ps, del: delLog };
+  wq = wq.then(() => new Promise(res => {
+    try {
+      const tx = idb.transaction(['kv', 'blobs'], 'readwrite');
+      fresh.forEach(id => tx.objectStore('blobs').put(blobs[id], id));
+      stale.forEach(id => tx.objectStore('blobs').delete(id));
+      tx.objectStore('kv').put(snapshot, 'projects');
+      tx.oncomplete = () => { storageFail = false; res(); };
+      tx.onerror = tx.onabort = () => { storageFail = true; fresh.forEach(id => savedBlobs.delete(id)); toast('Не вдалося зберегти — немає місця'); res(); };
+    } catch (e) { storageFail = true; res(); }
+  }));
+  scheduleSync();
+  return true;
+}
+
+/* ================= запити до сервера (з паролем) ================= */
+function askPw() {
+  return new Promise(res => {
+    const m = $('#modal2'), sh = $('#sheet2'); let done = false;
+    const fin = v => { if (done) return; done = true; m.hidden = true; sh.replaceChildren(); res(v); };
+    const inp = h('input', { class: 'inp', type: 'password', placeholder: 'Пароль', autocomplete: 'off' });
+    sh.replaceChildren(h('div', { class: 'grab' }), h('form', { onsubmit: e => { e.preventDefault(); fin(inp.value); } },
+      h('h3', {}, 'Потрібен пароль'), h('p', { class: 'muted sm' }, 'Сервер захищено паролем (змінна APP_PASSWORD).'), inp,
+      h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => fin(null) }, 'Скасувати'), h('button', { type: 'submit', class: 'btn primary' }, 'Увійти'))));
+    m.hidden = false; m.onclick = e => { if (e.target === m) fin(null); }; setTimeout(() => inp.focus(), 60);
+  });
+}
+const getPw = () => { try { return localStorage.getItem(PW_KEY) || ''; } catch (e) { return ''; } };
+const setPw = v => { try { if (v) localStorage.setItem(PW_KEY, v); else localStorage.removeItem(PW_KEY); } catch (e) {} };
+async function api(method, path, body, extra) {
+  const go = async () => {
+    const headers = Object.assign({}, extra || {}), pw = getPw(); if (pw) headers['X-App-Password'] = pw;
+    let payload;
+    if (body !== undefined) { if (typeof body === 'string') { payload = body; headers['Content-Type'] = 'text/plain'; } else { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; } }
+    try { return await fetch(new URL(path.replace(/^\//, ''), BASE), { method, headers, body: payload }); }
+    catch (e) { const err = new Error('Немає зв’язку із сервером'); err.network = true; throw err; }
+  };
+  let res = await go();
+  if (res.status === 401 && caps && caps.auth) {
+    const pw = await askPw();
+    if (pw === null) { const e = new Error('Потрібен пароль'); e.status = 401; throw e; }
+    setPw(pw); res = await go(); if (res.status === 401) setPw('');
+  }
+  if (!res.ok) {
+    let msg = 'Помилка сервера (' + res.status + ')'; try { msg = (await res.json()).error || msg; } catch (e) {}
+    const e = new Error(msg); e.status = res.status; throw e;
+  }
+  return (res.headers.get('content-type') || '').includes('json') ? res.json() : res.text();
+}
+
+/* ================= хмарне збереження (синхронізація) ================= */
+function setSync(st, msg) { syncState = st; syncErr = msg || ''; updateCloudUi(); }
+function updateCloudUi() {
+  const b = $('#cloudBtn'); if (!b) return;
+  const st = !syncCode ? 'off' : syncState === 'idle' ? 'syncing' : syncState;
+  b.className = 'icon s-' + st;
+  b.title = ({ off: 'Хмарне збереження вимкнено', ok: 'Збережено в хмарі', syncing: 'Синхронізація…', error: 'Помилка синхронізації: ' + syncErr })[st];
+  const m = $('#cloudMini'); if (m) m.textContent = ({ off: '', ok: '☁ у хмарі', syncing: '☁ синхронізація…', error: '☁ помилка' })[st];
+}
+function scheduleSync() { if (!syncCode || syncing || !caps || !caps.sync) return; clearTimeout(syncT); syncT = setTimeout(() => syncNow(false), 4000); }
+const isRef = v => typeof v === 'string' && v.startsWith('@blob:');
+async function syncNow(manual) {
+  if (!syncCode || syncing) return;
+  if (!caps || !caps.sync) { setSync('error', 'Сервер недоступний'); if (manual) toast('Сервер недоступний'); return; }
+  syncing = true; clearTimeout(syncT); setSync('syncing');
+  const hdr = { 'X-Sync-Code': syncCode };
+  try {
+    const r = await api('GET', 'api/sync', undefined, hdr);
+    const remote = r.state ? JSON.parse(r.state) : { p: [], del: {}, blobs: [] }, have = new Set(remote.blobs || []);
+    const tomb = Object.assign({}, remote.del || {}); for (const id in delLog) tomb[id] = Math.max(tomb[id] || 0, delLog[id]);
+    delLog = tomb;
+    // 1. забираємо новіше з хмари
+    const fetched = new Map(), getBlob = id => { if (!fetched.has(id)) fetched.set(id, api('GET', 'api/sync/blob/' + id, undefined, hdr)); return fetched.get(id); };
+    const dec = async files => { const out = {}; for (const k in files) { const v = files[k]; out[k] = isRef(v) ? await getBlob(v.slice(6)) : v; } return out; };
+    const byId = new Map(projects.map(p => [p.id, p])); let changed = false;
+    for (const rp of remote.p) {
+      if ((tomb[rp.id] || 0) >= rp.updated) continue;
+      const lp = byId.get(rp.id);
+      if (lp && (lp.updated >= rp.updated || (cur && cur.id === rp.id))) continue;
+      const np = Object.assign({}, rp, { files: await dec(rp.files), commits: [] });
+      for (const c of rp.commits || []) np.commits.push(Object.assign({}, c, { files: await dec(c.files) }));
+      if (lp) projects[projects.indexOf(lp)] = np; else projects.push(np);
+      changed = true;
+    }
+    // 2. застосовуємо видалення з інших пристроїв
+    const n0 = projects.length;
+    projects = projects.filter(p => !((tomb[p.id] || 0) >= p.updated) || (cur && cur.id === p.id));
+    if (projects.length !== n0) changed = true;
+    // 3. відправляємо своє
+    const { ps, blobs } = encodeProjects(), ids = Object.keys(blobs), sig = strHash(JSON.stringify({ ps, tomb }));
+    if (changed || sig !== lastSyncSig || ids.some(id => !have.has(id))) {
+      for (const id of ids) if (!have.has(id)) await api('PUT', 'api/sync/blob/' + id, blobs[id], hdr);
+      await api('PUT', 'api/sync', { p: ps, del: tomb, blobs: ids }, hdr);
+    }
+    lastSyncSig = sig; lastSyncAt = Date.now();
+    if (changed) { persist(); if (!$('#home').hidden) renderHome(); }
+    setSync('ok'); if (manual) toast('Синхронізовано');
+  } catch (e) {
+    setSync('error', e.message || 'помилка'); if (manual) toast('Не вдалося синхронізувати: ' + (e.message || ''));
+  } finally { syncing = false; }
+}
+function genCode() { const a = new Uint8Array(24); crypto.getRandomValues(a); return Array.from(a, b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join(''); }
+function openCloud() {
+  const root = h('div', { 'data-cloud': '1' });
+  const warn = caps && caps.storage && !caps.storage.durable ? h('div', { class: 'warn' }, 'Сховище сервера тимчасове: після перезапуску Render дані зникнуть. Підключіть PostgreSQL (змінна DATABASE_URL на Render).') : null;
+  const head = h('h3', {}, [h('span', { html: ic('cloud') }), 'Хмарне збереження']);
+  if (!caps || !caps.sync) {
+    root.append(head, h('p', { class: 'muted' }, 'Працює лише коли сайт запущено через сервер (server.js на Render). Зараз проєкти зберігаються тільки в цьому браузері — на цьому пристрої.'),
+      h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: closeSheet }, 'Зрозуміло')));
+  } else if (!syncCode) {
+    const codeInp = h('input', { class: 'inp mono', placeholder: 'Код з іншого пристрою', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', style: 'font-size:14px' });
+    const enable = code => { syncCode = code; try { localStorage.setItem(SYNC_KEY, code); } catch (e) {} lastSyncSig = ''; syncState = 'idle'; updateCloudUi(); openCloud(); syncNow(true).then(() => { if ($('#sheet [data-cloud]')) openCloud(); }); };
+    root.append(head,
+      h('p', { class: 'muted' }, 'Зараз проєкти зберігаються лише в цьому браузері. Увімкніть хмару — вони копіюватимуться на сервер і будуть доступні на інших пристроях.'), warn,
+      h('div', { class: 'row' }, h('button', { class: 'btn primary wide', onclick: () => enable(genCode()) }, 'Увімкнути хмарне збереження')),
+      h('h4', {}, 'Вже є код?'), codeInp,
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { const v = codeInp.value.trim(); if (!/^[A-Za-z0-9_-]{20,64}$/.test(v)) return toast('Невірний код'); enable(v); } }, 'Підключити цей пристрій')));
+  } else {
+    const codeInp = h('input', { class: 'inp mono', readonly: true, value: syncCode, style: 'font-size:14px', onfocus: e => e.target.select() });
+    const txt = syncState === 'error' ? 'Помилка: ' + syncErr : syncState === 'syncing' || syncState === 'idle' ? 'Синхронізація…' : 'Усе збережено в хмарі · ' + ago(lastSyncAt);
+    root.append(head, h('div', { style: 'margin-top:6px' }, h('span', { class: 'pill ' + (syncState === 'error' ? 'fail' : syncState === 'ok' ? 'live' : 'build') }, [h('span', { class: 'dot' }), txt])), warn,
+      h('p', { class: 'muted sm' }, 'Зміни зберігаються на сервері автоматично через кілька секунд. Щоб відкрити проєкти на іншому пристрої, введіть там цей код.'),
+      h('label', {}, 'Ваш код (це ключ до ваших проєктів — нікому його не передавайте)'), codeInp,
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => copyText(syncCode, codeInp) }, 'Копіювати код'),
+        h('button', { class: 'btn primary', onclick: async () => { await syncNow(true); if ($('#sheet [data-cloud]')) openCloud(); } }, 'Синхронізувати зараз')),
+      h('div', { class: 'row' }, h('button', { class: 'btn danger', onclick: async () => {
+        if (await confirmBox('Вимкнути хмару на цьому пристрої?', 'Проєкти залишаться тут і на сервері. Вони просто перестануть синхронізуватися з цього пристрою.', 'Вимкнути', true)) {
+          syncCode = ''; try { localStorage.removeItem(SYNC_KEY); } catch (e) {} lastSyncSig = ''; setSync('off'); toast('Хмару вимкнено');
+        } } }, 'Вимкнути на цьому пристрої')));
+  }
+  showSheet(root);
+}
+
+function starter(name) {
+  return {
+    'index.html': '<!doctype html>\n<html lang="uk">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <title>' + esc(name) + '</title>\n  <link rel="stylesheet" href="style.css">\n</head>\n<body>\n  <main class="card">\n    <h1>' + esc(name) + '</h1>\n    <p>Це ваш новий сайт. Змініть код — і він оновиться.</p>\n    <button id="btn">Натисни мене</button>\n    <p id="out"></p>\n  </main>\n  <script src="script.js"><\/script>\n</body>\n</html>\n',
+    'style.css': 'body {\n  margin: 0;\n  min-height: 100vh;\n  display: grid;\n  place-items: center;\n  background: #0d1117;\n  color: #e6edf3;\n  font-family: system-ui, sans-serif;\n}\n\n.card {\n  text-align: center;\n  padding: 32px;\n  border: 1px solid #30363d;\n  border-radius: 12px;\n  background: #161b22;\n}\n\nbutton {\n  padding: 10px 20px;\n  border: 0;\n  border-radius: 8px;\n  background: #238636;\n  color: #fff;\n  font-size: 16px;\n}\n',
+    'script.js': 'let count = 0;\nconst out = document.getElementById("out");\n\ndocument.getElementById("btn").addEventListener("click", () => {\n  count++;\n  out.textContent = "Натискань: " + count;\n  console.log("Натискань:", count);\n});\n'
+  };
+}
+function ensureGit(p) {
+  if (!p.commits || !p.commits.length) p.commits = [{ id: rid(), msg: 'Initial commit', t: p.updated || Date.now(), files: Object.assign({}, p.files) }];
+  if (!p.deploys) p.deploys = [];
+}
+function changes(p) {
+  const head = p.commits[0].files, out = [];
+  Object.keys(p.files).forEach(n => { if (head[n] === undefined) out.push({ n, t: 'A' }); else if (head[n] !== p.files[n]) out.push({ n, t: 'M' }); });
+  Object.keys(head).forEach(n => { if (p.files[n] === undefined) out.push({ n, t: 'D' }); });
+  return out;
+}
+function defaultMsg(ch) {
+  if (!ch.length) return '';
+  if (ch.length === 1) return ({ A: 'Add ', M: 'Update ', D: 'Delete ' })[ch[0].t] + ch[0].n;
+  return 'Update ' + ch.length + ' files';
+}
+function commit(p, msg) {
+  const ch = changes(p); if (!ch.length) return null;
+  const c = { id: rid(), msg: msg || defaultMsg(ch), t: Date.now(), files: Object.assign({}, p.files) };
+  p.commits.unshift(c);
+  const keep = new Set(p.deploys.slice(0, 10).map(d => d.commit));
+  p.commits = p.commits.filter((x, i) => i < 40 || keep.has(x.id));
+  p.updated = Date.now(); persist(); return c;
+}
+const findCommit = (p, id) => p.commits.find(c => c.id === id);
+function topLang(files) {
+  const sz = {}; Object.keys(files).forEach(n => { sz[ext(n)] = (sz[ext(n)] || 0) + files[n].length; });
+  const map = { html: ['HTML', '#e34c26'], htm: ['HTML', '#e34c26'], css: ['CSS', '#a371f7'], js: ['JavaScript', '#f1e05a'], mjs: ['JavaScript', '#f1e05a'] };
+  let best = null, bs = -1; for (const k in sz) if (map[k] && sz[k] > bs) { bs = sz[k]; best = map[k]; }
+  return best;
+}
+
+/* ================= збірка сайту ================= */
+function shim(o) {
+  try { window.localStorage.getItem('x'); } catch (e) {
+    try {
+      var s = {};
+      Object.defineProperty(window, 'localStorage', { value: {
+        getItem: function (k) { return k in s ? s[k] : null; }, setItem: function (k, v) { s[k] = String(v); },
+        removeItem: function (k) { delete s[k]; }, clear: function () { s = {}; }
+      }});
+    } catch (e2) {}
+  }
+  if (o.nav) document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null; if (!a || e.defaultPrevented) return;
+    var hr = a.getAttribute('href');
+    if (!hr || /^(#|[a-z][a-z0-9+.-]*:|\/\/)/i.test(hr) || (a.target && a.target !== '_self')) return;
+    e.preventDefault(); try { parent.postMessage({ clx: 1, t: 'nav', href: hr }, '*'); } catch (x) {}
+  });
+  if (!o.console) return;
+  function fmt(x) { try { if (typeof x === 'string') return x; if (x instanceof Error) return x.stack || x.message; var r = JSON.stringify(x); return r === undefined ? String(x) : r; } catch (e) { return String(x); } }
+  function send(t, a) { try { parent.postMessage({ clx: 1, t: t, a: a.map(fmt) }, '*'); } catch (e) {} }
+  ['log', 'info', 'warn', 'error'].forEach(function (m) {
+    var o2 = console[m];
+    console[m] = function () { send(m, [].slice.call(arguments)); o2.apply(console, arguments); };
+  });
+  addEventListener('error', function (e) { send('error', [e.message + (e.lineno ? ' (рядок ' + e.lineno + ')' : '')]); });
+  addEventListener('unhandledrejection', function (e) { send('error', ['Promise: ' + (e.reason && e.reason.message || e.reason)]); });
+}
+function buildDoc(files, opts) {
+  opts = opts || {};
+  const norm = p => p.replace(/^(?:\.{1,2}\/)*\/?/, '');
+  const first = Object.keys(files).find(k => /\.html?$/i.test(k));
+  const entry = opts.entry && files[opts.entry] != null ? opts.entry : (files['index.html'] != null ? 'index.html' : first);
+  let html = entry ? files[entry] : '<body style="font:16px sans-serif;padding:24px;color:#555">Додайте файл index.html</body>';
+  html = html.replace(/<link\b[^>]*>/gi, m => {
+    const hr = (m.match(/href\s*=\s*["']([^"']+)["']/i) || [])[1], k = hr && norm(hr);
+    return k && /\.css$/i.test(k) && files[k] != null ? '<style>' + files[k] + '</style>' : m;
+  });
+  html = html.replace(/<script\b([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (m, a, s, b) => {
+    const k = norm(s);
+    return files[k] != null ? '<script' + a + b + '>' + files[k].replace(/<\/script/gi, '<\\/script') + '<\/script>' : m;
+  });
+  Object.keys(files).filter(k => isBin(k) && String(files[k]).startsWith('data:')).sort((x, y) => y.length - x.length).forEach(k => {
+    html = html.replace(new RegExp('(["\'(]\\s*)(?:\\.{1,2}\\/)*\\/?' + reEsc(k) + '(?=[\\s"\')?#>])', 'g'), (m, g) => g + files[k]);
+  });
+  const inj = '<script>(' + shim.toString() + ')(' + JSON.stringify({ console: !!opts.console, nav: !!opts.nav }) + ')<\/script>';
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + inj) : inj + html;
+}
+
+/* ================= посилання ================= */
+function b64u(u8) {
+  let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64u(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '=';
+  const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u;
+}
+async function pack(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  if ('CompressionStream' in window) {
+    const buf = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+    return 'z' + b64u(new Uint8Array(buf));
+  }
+  return 'r' + b64u(bytes);
+}
+async function unpack(s) {
+  let bytes = unb64u(s.slice(1));
+  if (s[0] === 'z') bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+async function makeLink(files, name) { return BASE + '#/' + slug(name) + '/' + await pack({ n: name, f: files }); }
+async function copyText(t, inp) {
+  try { await navigator.clipboard.writeText(t); }
+  catch (e) { if (inp) { inp.focus(); inp.select(); } try { document.execCommand('copy'); } catch (e2) {} }
+  toast('Скопійовано');
+}
+function download(files, name) {
+  const url = URL.createObjectURL(new Blob([buildDoc(files, { console: false })], { type: 'text/html' }));
+  const a = h('a', { href: url, download: slug(name) + '.html', style: 'display:none' });
+  document.body.append(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+}
+
+/* ================= файли: ZIP, фото ================= */
+function b64(u8) { let t = ''; for (let i = 0; i < u8.length; i += 0x8000) t += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(t); }
+const bytesToDataUrl = (u8, mime) => 'data:' + (mime || 'application/octet-stream') + ';base64,' + b64(u8);
+function dataToBytes(d) { const t = atob(d.slice(d.indexOf(',') + 1)), u = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u; }
+async function readZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let e = -1; for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) { if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; } }
+  if (e < 0) throw new Error('це не ZIP-архів');
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true), total = 0; const out = [], dec = new TextDecoder();
+  for (let k = 0; k < n && k < 400; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), usize = dv.getUint32(p + 24, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+    if (name.endsWith('/')) continue;
+    total += usize; if (total > 40 * 1048576) throw new Error('архів завеликий (понад 40 МБ)');
+    const ds = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    let data = u8.subarray(ds, ds + csize);
+    if (method === 8) data = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    else if (method !== 0) continue;
+    out.push({ name, data });
+  }
+  return out;
+}
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = -1; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ -1) >>> 0; }
+function makeZip(entries) {
+  const enc = new TextEncoder(), parts = [], cen = [], now = new Date();
+  const dt = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate(), tm = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  let off = 0;
+  entries.forEach(en => {
+    const nm = enc.encode(en.name), crc = crc32(en.data), sz = en.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x800, true); lh.setUint16(10, tm, true); lh.setUint16(12, dt, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true); lh.setUint16(26, nm.length, true);
+    parts.push(new Uint8Array(lh.buffer), nm, en.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x800, true); ch.setUint16(12, tm, true); ch.setUint16(14, dt, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+    cen.push(new Uint8Array(ch.buffer), nm); off += 30 + nm.length + sz;
+  });
+  let cs = 0; cen.forEach(c => { cs += c.length; });
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true); end.setUint32(12, cs, true); end.setUint32(16, off, true);
+  return new Blob(parts.concat(cen, [new Uint8Array(end.buffer)]), { type: 'application/zip' });
+}
+function downloadZip(files, name) {
+  const enc = new TextEncoder();
+  const entries = Object.keys(files).map(n => ({ name: n, data: isBin(n) && String(files[n]).startsWith('data:') ? dataToBytes(files[n]) : enc.encode(files[n]) }));
+  const url = URL.createObjectURL(makeZip(entries));
+  const a = h('a', { href: url, download: slug(name) + '.zip', style: 'display:none' });
+  document.body.append(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+}
+const readDataUrl = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+async function prepImage(blob, name) {            // стискає фото до 1600 px, щоб не забивати пам'ять
+  const e = ext(name), orig = await readDataUrl(new Blob([blob], { type: MIME[e] || blob.type || 'image/jpeg' }));
+  if (!/^(png|jpe?g|webp)$/.test(e)) return { data: orig, w: 0, h: 0 };
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = orig; });
+    const w0 = im.naturalWidth, h0 = im.naturalHeight, k = Math.min(1, 1600 / Math.max(w0, h0));
+    if (k === 1 && blob.size < 500 * 1024) return { data: orig, w: w0, h: h0 };
+    const w = Math.max(1, Math.round(w0 * k)), hh = Math.max(1, Math.round(h0 * k)), c = document.createElement('canvas');
+    c.width = w; c.height = hh; c.getContext('2d').drawImage(im, 0, 0, w, hh);
+    const out = e === 'png' ? c.toDataURL('image/png') : c.toDataURL(e === 'webp' ? 'image/webp' : 'image/jpeg', 0.82);
+    return out.length < orig.length ? { data: out, w, h: hh } : { data: orig, w, h: hh };
+  } catch (err) { return { data: orig, w: 0, h: 0 }; }
+}
+
+/* ================= вікна (sheet) ================= */
+let sheetCancel = null;
+function showSheet(node) { $('#sheet').replaceChildren(h('div', { class: 'grab' }), node); $('#modal').hidden = false; }
+function closeSheet() { const c = sheetCancel; sheetCancel = null; $('#modal').hidden = true; $('#sheet').replaceChildren(); if (c) c(); }
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeSheet(); });
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeSheet(); });
+function ask(ttl, value, ok, ph) {
+  return new Promise(res => {
+    let done = false;
+    const finish = v => { if (done) return; done = true; res(v); closeSheet(); };
+    const inp = h('input', { class: 'inp', value: value || '', placeholder: ph || '', maxlength: '60', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const form = h('form', { onsubmit: e => { e.preventDefault(); finish(inp.value.trim()); } },
+      h('h3', {}, ttl), h('div', { style: 'margin-top:10px' }, inp),
+      h('div', { class: 'row end' },
+        h('button', { type: 'button', class: 'btn', onclick: () => finish(null) }, 'Скасувати'),
+        h('button', { type: 'submit', class: 'btn primary' }, ok || 'Готово')));
+    sheetCancel = () => finish(null); showSheet(form);
+    setTimeout(() => { inp.focus(); inp.select(); }, 60);
+  });
+}
+function confirmBox(ttl, text, ok, danger) {
+  return new Promise(res => {
+    let done = false;
+    const finish = v => { if (done) return; done = true; res(v); closeSheet(); };
+    sheetCancel = () => finish(false);
+    showSheet(h('div', {}, h('h3', {}, ttl), h('p', { class: 'muted' }, text),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', onclick: () => finish(false) }, 'Скасувати'),
+        h('button', { class: 'btn ' + (danger ? 'danger' : 'primary'), onclick: () => finish(true) }, ok || 'Так'))));
+  });
+}
+
+/* ================= редактор коду ================= */
+function hlJS(src) {
+  const re = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?|`(?:\\[\s\S]|[^`\\])*`?)|(\b0x[\da-fA-F]+\b|\b\d+(?:\.\d+)?\b)|(\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|this|super|delete|void|yield|static)\b)|(\b(?:true|false|null|undefined|NaN|Infinity)\b)|(\b[A-Za-z_$][\w$]*(?=\s*\())/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    const c = m[1] !== undefined ? 'c' : m[2] !== undefined ? 's' : m[3] !== undefined ? 'n' : m[4] !== undefined ? 'k' : m[5] !== undefined ? 'a' : 'f';
+    out += '<span class="t-' + c + '">' + esc(m[0]) + '</span>'; last = re.lastIndex;
+  }
+  return out + esc(src.slice(last));
+}
+function hlCSS(src) {
+  const re = /(\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)|(@[\w-]+)|([{};])|(#[\w-]+)|(-?(?:\d+\.?\d*|\.\d+)(?:px|em|rem|%|vh|vw|vmin|vmax|ms|s|deg|fr|ch)?)|([A-Za-z_-][\w-]*)|(\.[A-Za-z_-][\w-]*)|(::?[A-Za-z-]+)/g;
+  const stack = []; let start = 0, out = '', last = 0, m;
+  const sp = (c, s) => '<span class="t-' + c + '">' + esc(s) + '</span>';
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index)); last = re.lastIndex;
+    const decl = stack.length && stack[stack.length - 1];
+    if (m[1] !== undefined) out += sp('c', m[0]);
+    else if (m[2] !== undefined) out += sp('s', m[0]);
+    else if (m[3] !== undefined) out += sp('k', m[0]);
+    else if (m[4] !== undefined) {
+      if (m[0] === '{') stack.push(!/^\s*@(media|supports|keyframes|-webkit-keyframes|layer|container|document)/i.test(src.slice(start, m.index)));
+      else if (m[0] === '}') stack.pop();
+      start = m.index + 1; out += esc(m[0]);
+    }
+    else if (m[5] !== undefined) out += sp(decl ? 'n' : 'f', m[0]);
+    else if (m[6] !== undefined) out += sp('n', m[0]);
+    else if (m[7] !== undefined) out += decl ? (/^\s*:/.test(src.slice(re.lastIndex)) ? sp('p', m[0]) : esc(m[0])) : sp('tg', m[0]);
+    else if (m[8] !== undefined) out += sp('f', m[0]);
+    else out += decl ? esc(m[0]) : sp('k', m[0]);
+  }
+  return out + esc(src.slice(last));
+}
+function hlAttrs(a) {
+  const re = /([^\s"'<>\/=]+)(\s*=\s*)?("[^"]*"?|'[^']*'?|[^\s"'<>]+)?/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(a))) {
+    out += esc(a.slice(last, m.index)) + '<span class="t-at">' + esc(m[1]) + '</span>' + (m[2] ? esc(m[2]) : '') + (m[3] ? '<span class="t-s">' + esc(m[3]) + '</span>' : '');
+    last = re.lastIndex;
+  }
+  return out + esc(a.slice(last));
+}
+function hlMarkup(s) {
+  const re = /(<!--[\s\S]*?(?:-->|$))|(<![A-Za-z][^>]*>?)|(<\/?)([A-Za-z][\w:-]*)((?:\s+[^\s"'<>\/=]+(?:\s*=\s*(?:"[^"]*"?|'[^']*'?|[^\s"'<>]+))?)*)(\s*\/?>?)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(s))) {
+    out += esc(s.slice(last, m.index));
+    if (m[1] !== undefined || m[2] !== undefined) out += '<span class="t-c">' + esc(m[0]) + '</span>';
+    else out += esc(m[3]) + '<span class="t-tg">' + esc(m[4]) + '</span>' + hlAttrs(m[5]) + esc(m[6]);
+    last = re.lastIndex;
+  }
+  return out + esc(s.slice(last));
+}
+function hlHTML(src) {
+  const re = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>|$)|(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>|$)/gi;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += hlMarkup(src.slice(last, m.index));
+    out += m[1] !== undefined ? hlMarkup(m[1]) + hlCSS(m[2]) + hlMarkup(m[3]) : hlMarkup(m[4]) + hlJS(m[5]) + hlMarkup(m[6]);
+    last = re.lastIndex;
+  }
+  return out + hlMarkup(src.slice(last));
+}
+function highlight(text, name) {
+  if (text.length > 250000) return esc(text);
+  const e = ext(name);
+  if (e === 'html' || e === 'htm') return hlHTML(text);
+  if (e === 'css') return hlCSS(text);
+  if (e === 'js' || e === 'mjs' || e === 'json') return hlJS(text);
+  return esc(text);
+}
+
+const ta = $('#ta'), hl = $('#hl'), hlc = $('#hlc'), gutter = $('#gutter'), nums = $('#nums');
+const Ed = {
+  name: '', onChange: null, lines: 0,
+  load(text, name) { this.name = name; ta.value = text; this.render(); ta.scrollTop = 0; ta.scrollLeft = 0; this.sync(); },
+  render() {
+    hlc.innerHTML = highlight(ta.value, this.name) + '\n';
+    const n = ta.value.split('\n').length;
+    if (n !== this.lines) {
+      this.lines = n; let s = ''; for (let i = 1; i <= n; i++) s += i + '\n';
+      nums.textContent = s; gutter.style.width = 'calc(' + Math.max(2, String(n).length) + 'ch + 17px)';
+    }
+  },
+  sync() { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; gutter.scrollTop = ta.scrollTop; },
+  insert(s) {
+    ta.focus();
+    let ok = false; try { ok = document.execCommand('insertText', false, s); } catch (e) {}
+    if (!ok) { ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); }
+  },
+  caret(p) { ta.setSelectionRange(p, p); },
+  undo() { ta.focus(); try { document.execCommand('undo'); } catch (e) {} },
+  redo() { ta.focus(); try { document.execCommand('redo'); } catch (e) {} },
+  focus() { ta.focus(); }
+};
+ta.addEventListener('input', () => { Ed.render(); Ed.sync(); if (Ed.onChange) Ed.onChange(ta.value); });
+ta.addEventListener('scroll', () => Ed.sync());
+const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
+ta.addEventListener('beforeinput', e => {
+  if (e.isComposing) return;
+  const t = e.inputType, v = ta.value, s = ta.selectionStart, en = ta.selectionEnd;
+  if (t === 'insertLineBreak' || t === 'insertParagraph') {
+    e.preventDefault();
+    const ls = v.lastIndexOf('\n', s - 1) + 1, ind = v.slice(ls, s).match(/^[ \t]*/)[0];
+    const before = v[s - 1], after = v[en], pairs = { '{': '}', '[': ']', '(': ')' };
+    const tagOpen = before === '>' && after === '<' && /<[A-Za-z][^<>]*>$/.test(v.slice(ls, s)) && !/\/>$/.test(v.slice(ls, s));
+    if ((pairs[before] && after === pairs[before]) || tagOpen) {
+      Ed.insert('\n' + ind + '  \n' + ind); Ed.caret(s + 1 + ind.length + 2);
+    } else if (pairs[before]) Ed.insert('\n' + ind + '  ');
+    else Ed.insert('\n' + ind);
+    return;
+  }
+  if (t === 'insertText' && e.data && e.data.length === 1) {
+    const d = e.data, closers = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' };
+    if (s === en && ')]}"\'`'.includes(d) && v[s] === d) { e.preventDefault(); Ed.caret(s + 1); return; }
+    if (closers[d]) {
+      const nx = v[en], pv = v[s - 1], quote = '"\'`'.includes(d);
+      if (s !== en) { e.preventDefault(); Ed.insert(d + v.slice(s, en) + closers[d]); ta.setSelectionRange(s + 1, en + 1); return; }
+      if ((nx === undefined || /[\s)\]}>,;.:]/.test(nx)) && !(quote && pv && /\w/.test(pv))) {
+        e.preventDefault(); Ed.insert(d + closers[d]); Ed.caret(s + 1); return;
+      }
+    }
+    if (d === '>' && s === en && /\.(html?|svg)$/i.test(Ed.name)) {
+      const m = v.slice(0, s).match(/<([A-Za-z][\w:-]*)(?:\s[^<>]*)?$/);
+      if (m && !VOID.test(m[1]) && v[s - 1] !== '/') { e.preventDefault(); Ed.insert('></' + m[1] + '>'); Ed.caret(s + 1); }
+    }
+  }
+});
+ta.addEventListener('keydown', e => {
+  if (e.key === 'Tab') { e.preventDefault(); Ed.insert('  '); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (cur) { persist(); toast('Збережено'); } }
+});
+const KEYS = ['Tab', '<', '>', '/', '=', '"', "'", '{', '}', '(', ')', '[', ']', ';', ':', '.', ',', '#', '!', '$', '`', '↶', '↷'];
+KEYS.forEach(k => {
+  const b = h('button', { type: 'button', 'aria-label': k }, k);
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (k === 'Tab') Ed.insert('  '); else if (k === '↶') Ed.undo(); else if (k === '↷') Ed.redo();
+    else { Ed.insert(k); const v = ta.value, s = ta.selectionStart, cl = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`' }[k]; if (cl && (v[s] === undefined || /[\s)\]}>,;]/.test(v[s]))) { Ed.insert(cl); Ed.caret(s); } }
+  });
+  b.addEventListener('contextmenu', e => e.preventDefault());
+  $('#keys').append(b);
+});
+
+/* ================= головна ================= */
+let cur = null, curFile = null, viewEntry = null, vEntry = null, vFiles = null;
+function showView(id) { ['home', 'project', 'viewer'].forEach(v => { $('#' + v).hidden = v !== id; }); }
+function renderHome() {
+  const ul = $('#projList'); ul.replaceChildren();
+  const q = $('#q').value.trim().toLowerCase();
+  const list = projects.filter(p => !q || title(p).toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
+  if (!list.length) {
+    ul.append(h('li', { class: 'empty' }, projects.length ? 'Нічого не знайдено.' : 'Проєктів ще немає. Натисніть «ШІ-майстер», щоб створити сайт за описом, або «Новий» — і пишіть код самі.'));
+    return;
+  }
+  list.forEach(p => {
+    const lang = topLang(p.files), live = p.deploys && p.deploys.length;
+    ul.append(h('li', { onclick: () => openProject(p.id) },
+      h('span', { class: 'muted', html: ic('repo') }),
+      h('div', { class: 'meta' },
+        h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' },
+          h('span', { class: 'nm' }, title(p)),
+          h('span', { class: 'pill' + (live ? ' live' : '') }, live ? [h('span', { class: 'dot' }), 'Live'] : 'Static Site')),
+        h('div', { class: 'sub' },
+          lang ? [h('span', { class: 'lang', style: 'background:' + lang[1] }), lang[0] + ' · '] : '',
+          Object.keys(p.files).length + ' файл(и) · ' + (p.commits ? p.commits.length : 1) + ' комітів · ' + ago(p.updated))),
+      h('button', { class: 'icon', 'aria-label': 'Видалити', html: ic('trash'), onclick: async e => {
+        e.stopPropagation();
+        if (await confirmBox('Видалити «' + title(p) + '»?', 'Проєкт, коміти та деплої буде видалено з цього пристрою.', 'Видалити', true)) {
+          projects = projects.filter(x => x.id !== p.id); delLog[p.id] = Date.now(); persist(); renderHome();
+        }
+      } })));
+  });
+}
+$('#q').addEventListener('input', renderHome);
+$('#newBtn').onclick = async () => {
+  const name = await ask('Назва проєкту', '', 'Створити', 'Напр. Мій перший сайт');
+  if (name === null) return;
+  const nm = name || 'Без назви', files = starter(nm);
+  const p = { id: rid() + rid(), name: nm, files, updated: Date.now(), commits: [], deploys: [] };
+  ensureGit(p); projects.push(p); persist(); openProject(p.id);
+};
+
+/* ================= проєкт ================= */
+let dirty = true, saveT, filesT;
+function setPane(p) {
+  $('#workspace').dataset.pane = p;
+  document.querySelectorAll('.bottomnav button').forEach(b => b.classList.toggle('active', b.dataset.go === p));
+  if (p === 'preview' && dirty) renderNow();
+  if (p === 'code') Ed.sync();
+}
+document.querySelectorAll('.bottomnav button').forEach(b => { b.onclick = () => setPane(b.dataset.go); });
+
+function openProject(id) {
+  cur = projects.find(p => p.id === id); if (!cur) return;
+  ensureGit(cur);
+  showView('project'); history.pushState({ p: 1 }, '');
+  $('#nameInput').value = cur.name;
+  const first = cur.files['index.html'] != null ? 'index.html' : Object.keys(cur.files)[0];
+  viewEntry = null; openFile(first, true); renderFiles(); clearConsole(); dirty = true; updateUrl();
+  setPane(isWide() ? 'code' : 'files'); if (isWide()) renderNow();
+}
+function openFile(n, stay) {
+  curFile = n; $('#curFile').textContent = n;
+  const bin = isBin(n);
+  $('#ed').hidden = bin; $('#keys').hidden = bin; $('#binView').hidden = !bin;
+  if (bin) showBin(n); else Ed.load(cur.files[n], n);
+  renderFiles();
+  if (!stay && !isWide()) setPane('code');
+}
+function showBin(n) {
+  const d = String(cur.files[n]), v = $('#binView'), e = ext(n);
+  const info = h('div', { class: 'info' }, e.toUpperCase() + ' · ' + fmtSize(dataSize(d)) + ' · у коді: ' + n);
+  v.replaceChildren();
+  if (isImg(n)) v.append(h('img', { src: d, alt: n }), info);
+  else if (/^(mp3|wav|ogg|m4a)$/.test(e)) v.append(h('audio', { controls: true, src: d }), info);
+  else if (/^(mp4|webm)$/.test(e)) v.append(h('video', { controls: true, src: d, style: 'max-width:100%' }), info);
+  else v.append(info);
+}
+Ed.onChange = v => {
+  if (!cur) return;
+  cur.files[curFile] = v; dirty = true; touch(); scheduleRender();
+  clearTimeout(filesT); filesT = setTimeout(renderFiles, 350);
+};
+function touch() {
+  cur.updated = Date.now(); $('#saveState').textContent = 'Збереження…';
+  clearTimeout(saveT); saveT = setTimeout(() => { $('#saveState').textContent = persist() && !storageFail ? 'Збережено' : 'Не вдалося зберегти'; }, 500);
+}
+function renderFiles() {
+  if (!cur) return;
+  const ch = changes(cur), tg = {}; ch.forEach(c => { tg[c.n] = c.t; });
+  const head = cur.commits[0];
+  $('#commitBar').replaceChildren(
+    h('span', { class: 'muted', html: ic('commit') }), h('span', { class: 'msg' }, head.msg),
+    h('code', { class: 'h' }, head.id), h('span', { class: 'muted sm' }, ago(head.t)));
+  $('#commitCountTxt').textContent = cur.commits.length + (ch.length ? ' · ' + ch.length + ' змін' : '');
+  const ul = $('#fileList'); ul.replaceChildren();
+  Object.keys(cur.files).forEach(n => {
+    const bin = isBin(n);
+    ul.append(h('li', { class: n === curFile ? 'active' : '', onclick: () => openFile(n) },
+      isImg(n) ? h('img', { class: 'thumb', src: cur.files[n], alt: '' }) : h('span', { class: 'muted', html: ic('file') }),
+      h('div', { class: 'meta' }, h('div', { class: 'nm', style: 'color:var(--fg);font-weight:500;word-break:break-all;white-space:normal' }, n),
+        bin ? h('div', { class: 'sub' }, fmtSize(dataSize(String(cur.files[n])))) : null),
+      tg[n] ? h('span', { class: 'tag ' + tg[n], style: 'margin:0' }, tg[n]) : null,
+      h('button', { class: 'icon', 'aria-label': 'Перейменувати', html: ic('pen'), onclick: e => { e.stopPropagation(); renameFile(n); } }),
+      h('button', { class: 'icon', 'aria-label': 'Видалити', html: ic('trash'), onclick: e => { e.stopPropagation(); deleteFile(n); } })));
+  });
+}
+const cleanName = v => (v || '').trim().replace(/\s+/g, '-').replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
+$('#addFile').onclick = async () => {
+  const n = cleanName(await ask('Назва нового файлу', '', 'Створити', 'about.html, app.js, style.css'));
+  if (!n) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  cur.files[n] = ''; touch(); dirty = true; openFile(n);
+};
+async function renameFile(old) {
+  const n = cleanName(await ask('Нова назва файлу', old, 'Зберегти'));
+  if (!n || n === old) return;
+  if (cur.files[n] != null) return toast('Такий файл уже є');
+  const nf = {}; Object.keys(cur.files).forEach(k => { nf[k === old ? n : k] = cur.files[k]; });
+  cur.files = nf; touch(); dirty = true;
+  if (curFile === old) openFile(n, true); else renderFiles();
+  scheduleRender();
+}
+async function deleteFile(n) {
+  if (Object.keys(cur.files).length < 2) return toast('Має лишитися хоча б один файл');
+  if (!(await confirmBox('Видалити «' + n + '»?', 'Файл можна повернути, відновивши попередній коміт.', 'Видалити', true))) return;
+  delete cur.files[n];
+  if (curFile === n) openFile(Object.keys(cur.files)[0], true);
+  touch(); renderFiles(); dirty = true; scheduleRender();
+}
+/* ----- завантаження фото та готових файлів ----- */
+const SKIP = /(^|\/)(\.DS_Store|Thumbs\.db|node_modules|\.git|__MACOSX)(\/|$)/;
+const NOPE = /^(heic|heif|psd|ai|exe|dll|dmg|apk|rar|7z|tar|gz|doc|docx|xls|xlsx|ppt|pptx|zip|mov|avi|mkv)$/;
+const safeName = n => n.replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
+async function importOne(name, bytes, rep) {
+  name = safeName(name); if (!name || SKIP.test(name)) return;
+  const put = d => { if (cur.files[name] != null) rep.replaced++; else rep.added++; cur.files[name] = d; };
+  if (isBin(name)) {
+    if (bytes.length > 12 * 1048576) return rep.skipped.push(name + ' (понад 12 МБ)');
+    return put(isImg(name) ? (await prepImage(new Blob([bytes]), name)).data : bytesToDataUrl(bytes, MIME[ext(name)]));
+  }
+  if (NOPE.test(ext(name))) return rep.skipped.push(name + (/^hei[cf]$/.test(ext(name)) ? ' (HEIC не підтримується — оберіть JPEG)' : ' (непідтримуваний формат)'));
+  if (bytes.length > 2 * 1048576) return rep.skipped.push(name + ' (текстовий файл понад 2 МБ)');
+  let txt; try { txt = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { return rep.skipped.push(name + ' (не текстовий файл)'); }
+  put(txt.replace(/^﻿/, '').replace(/\r\n/g, '\n'));
+}
+async function importFiles(list) {
+  if (!cur) return;
+  const rep = { added: 0, replaced: 0, skipped: [] };
+  toast('Завантаження…');
+  for (const f of Array.from(list)) {
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      if (/\.zip$/i.test(f.name)) {
+        const items = (await readZip(buf)).filter(i => !SKIP.test(safeName(i.name))), roots = new Set(items.map(i => i.name.split('/')[0]));
+        const strip = roots.size === 1 && items.every(i => i.name.includes('/')) ? Array.from(roots)[0] + '/' : '';
+        for (const it of items) await importOne(strip ? it.name.slice(strip.length) : it.name, it.data, rep);
+      } else await importOne(f.name, buf, rep);
+    } catch (e) { rep.skipped.push(f.name + ' (' + (e && e.message || 'помилка') + ')'); }
+  }
+  const n = rep.added + rep.replaced;
+  if (n) {
+    touch(); dirty = true;
+    openFile(cur.files[curFile] != null ? curFile : Object.keys(cur.files)[0], true); scheduleRender();
+    toast((rep.added ? 'Додано: ' + rep.added : '') + (rep.replaced ? (rep.added ? ', ' : '') + 'замінено: ' + rep.replaced : ''));
+  }
+  if (rep.skipped.length) {
+    showSheet(h('div', {}, h('h3', {}, n ? 'Частину файлів пропущено' : 'Нічого не додано'),
+      h('div', { class: 'warn' }, rep.skipped.slice(0, 12).map(t => h('div', {}, t))),
+      h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: closeSheet }, 'Зрозуміло'))));
+  } else if (!n) toast('Нічого не додано');
+}
+$('#addPhoto').onclick = () => $('#inPhoto').click();
+$('#addUpload').onclick = () => $('#inFiles').click();
+['#inPhoto', '#inFiles'].forEach(sel => $(sel).addEventListener('change', e => { const l = Array.from(e.target.files); e.target.value = ''; if (l.length) importFiles(l); }));
+$('#filesPane').addEventListener('dragover', e => e.preventDefault());
+$('#filesPane').addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer && e.dataTransfer.files.length) importFiles(e.dataTransfer.files); });
+
+$('#nameInput').addEventListener('input', e => { cur.name = e.target.value; touch(); updateUrl(); });
+function goHome() { cur = null; showView('home'); renderHome(); }
+$('#back').onclick = () => { goHome(); if (history.state && history.state.p) history.back(); };
+
+/* ================= перегляд ================= */
+let renderT, errs = 0;
+function updateUrl() { if (cur) $('#urlText').textContent = slug(title(cur)) + '/' + (viewEntry || 'index.html'); }
+function scheduleRender() { clearTimeout(renderT); renderT = setTimeout(() => { if (isWide() || $('#workspace').dataset.pane === 'preview') renderNow(); }, 450); }
+function renderNow() { if (!cur) return; dirty = false; clearConsole(); setFrame('frame', buildDoc(cur.files, { console: true, nav: true, entry: viewEntry })); }
+$('#reload').onclick = renderNow;
+$('#openTab').onclick = () => {
+  const url = URL.createObjectURL(new Blob([buildDoc(cur.files, { console: false })], { type: 'text/html' }));
+  const w = window.open(url, '_blank'); if (!w) toast('Браузер заблокував вікно — дозвольте спливні вікна');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+function clearConsole() { errs = 0; $('#conLines').replaceChildren(); $('#conCount').hidden = true; }
+$('#conBtn').onclick = () => { const c = $('#console'); c.hidden = !c.hidden; };
+$('#conClear').onclick = clearConsole;
+function resolveNav(files, from, href) {
+  const p = href.split('#')[0].split('?')[0]; if (!p) return null;
+  const dir = from && from.includes('/') ? from.slice(0, from.lastIndexOf('/') + 1) : '';
+  const clean = t => t.split('/').reduce((a, seg) => { if (seg === '..') a.pop(); else if (seg && seg !== '.') a.push(seg); return a; }, []).join('/');
+  for (const c of [clean(p.startsWith('/') ? p.slice(1) : dir + p), clean(p)]) {
+    if (files[c] != null && /\.html?$/i.test(c)) return c;
+    if (files[c + '/index.html'] != null) return c + '/index.html';
+    if (files[c + '.html'] != null) return c + '.html';
+  }
+  return null;
+}
+addEventListener('message', e => {
+  const d = e.data; if (!d || !d.clx) return;
+  if (d.t === 'nav') {
+    if (cur && e.source === $('#frame').contentWindow) {
+      const to = resolveNav(cur.files, viewEntry, String(d.href)); if (!to) return toast('Сторінку не знайдено: ' + d.href);
+      viewEntry = to; updateUrl(); renderNow();
+    } else if (vFiles && e.source === $('#vframe').contentWindow) {
+      const to = resolveNav(vFiles, vEntry, String(d.href)); if (!to) return;
+      vEntry = to; setFrame('vframe', buildDoc(vFiles, { nav: true, entry: to }));
+    }
+    return;
+  }
+  if (e.source !== $('#frame').contentWindow) return;
+  $('#conLines').append(h('div', { class: d.t }, d.a.join(' ')));
+  if (d.t === 'error') { errs++; $('#conCount').textContent = errs; $('#conCount').hidden = false; }
+  const l = $('#conLines'); l.scrollTop = l.scrollHeight;
+});
+
+/* ================= коміти (як GitHub) ================= */
+function openCommits() {
+  const ch = changes(cur), dm = defaultMsg(ch);
+  const msg = h('input', { class: 'inp', placeholder: dm || 'Опис коміту', maxlength: '80', autocomplete: 'off' });
+  const doCommit = () => {
+    const c = commit(cur, msg.value.trim() || dm);
+    if (c) { toast('Коміт ' + c.id + ' створено'); renderFiles(); openCommits(); }
+  };
+  const list = h('div', {});
+  cur.commits.forEach((c, i) => {
+    list.append(h('div', { class: 'item' },
+      h('span', { class: 'muted', html: ic('commit') }),
+      h('div', { class: 'meta' }, h('div', { class: 't' }, c.msg),
+        h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, c.id), ' · ' + ago(c.t) + (i === 0 ? ' · HEAD' : '')])),
+      i === 0 && !ch.length ? null : h('button', { class: 'btn sm', onclick: async () => {
+        if (!(await confirmBox('Відновити коміт ' + c.id + '?', 'Поточні файли буде замінено файлами з цього коміту. Незакомічені зміни зникнуть.', 'Відновити'))) return;
+        cur.files = Object.assign({}, c.files); touch(); dirty = true;
+        openFile(cur.files[curFile] != null ? curFile : Object.keys(cur.files)[0], true); renderFiles(); scheduleRender(); toast('Відновлено ' + c.id);
+      } }, 'Відновити')));
+  });
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('commit') }), 'Коміти']),
+    h('label', {}, ch.length ? 'Змінені файли' : 'Зміни'),
+    ch.length ? h('div', {}, ch.map(c => h('div', { class: 'sm', style: 'padding:2px 0' }, [h('span', { class: 'tag ' + c.t }, c.t), c.n])))
+              : h('p', { class: 'muted sm' }, 'Немає незакомічених змін.'),
+    h('label', {}, 'Опис коміту'), msg,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: !ch.length, onclick: doCommit }, 'Закомітити зміни')),
+    h('h4', {}, 'Історія (' + cur.commits.length + ')'), list));
+}
+$('#commitsBtn').onclick = openCommits; $('#commitCount').onclick = openCommits;
+
+/* ================= деплой (як Render) ================= */
+async function publishSite(p, files, o) {
+  o = o || {}; const prefix = caps.prefix;
+  const cur0 = p.pub && p.pub.slug && p.pub.slug.startsWith(prefix) ? p.pub.slug.slice(prefix.length) : '';
+  const part = (o.part || cur0 || slug(title(p))).slice(0, 40).replace(/-+$/, '');
+  const same = !!cur0 && part === cur0;
+  const r = await api('POST', 'api/publish', { name: title(p), part, exact: same || !!o.exact, token: same ? p.pub.token : undefined, files });
+  const old = p.pub;
+  p.pub = { slug: r.slug, token: r.token || (same ? old.token : '') };
+  if (old && old.slug !== r.slug && old.token) api('DELETE', 'api/publish/' + old.slug, undefined, { 'X-Site-Token': old.token }).catch(() => {});   // перейменування: стара адреса вимикається
+  return { slug: r.slug, url: new URL(r.slug + '/', BASE).href };
+}
+async function doDeploy(p, log, pace, opts) {
+  const w = pace === false ? () => Promise.resolve() : wait;
+  await w(350);
+  const ch = changes(p);
+  if (ch.length) { const c = commit(p, 'Deploy: ' + defaultMsg(ch)); log('Закомічено зміни (' + ch.length + '): ' + c.id); await w(350); }
+  const head = p.commits[0];
+  log('Деплой коміту ' + head.id + ' — ' + head.msg); await w(450);
+  log('Збираємо файли проєкту (' + Object.keys(head.files).length + ')'); await w(450);
+  log('Команда збірки не потрібна — статичний сайт'); await w(400);
+  let link = '', short = false;
+  if (caps && caps.publish) {
+    try {
+      log('Публікуємо на сервері…'); await w(250);
+      const r = await publishSite(p, head.files, opts); link = r.url; short = true; log('Адреса сайту: ' + link);
+    } catch (e) {
+      if ([400, 401, 403, 409, 429].includes(e.status)) throw e;
+      log('Сервер публікації недоступний (' + (e.message || 'помилка') + ') — створюємо довге посилання', 'err');
+    }
+  }
+  if (!link) { link = await makeLink(head.files, title(p)); log('Створюємо посилання (' + fmtSize(link.length) + ')'); await w(450); }
+  p.deploys.unshift({ id: rid(), commit: head.id, t: Date.now(), url: short ? link : undefined }); p.deploys = p.deploys.slice(0, 20); p.updated = Date.now(); persist();
+  log('Сайт активний. Деплой завершено.');
+  return link;
+}
+let deploying = false;
+function openDeploy() {
+  const p = cur, root = h('div', {});
+  const nameInp = h('input', { class: 'inp', value: p.name, maxlength: '60', placeholder: 'Назва сайту', autocomplete: 'off' });
+  const urlInp = h('input', { class: 'inp mono', readonly: true, style: 'font-size:12px', placeholder: 'Посилання з’явиться після першого деплою', onfocus: e => e.target.select() });
+  const openA = h('a', { class: 'btn', target: '_blank', rel: 'noopener' }, 'Відкрити');
+  const pillBox = h('span', {}), listBox = h('div', {}), term = h('div', { class: 'term', hidden: true });
+  const deployBtn = h('button', { class: 'btn primary wide', onclick: run }, [h('span', { html: ic('up') }), 'Деплой']);
+  const copyBtn = h('button', { class: 'btn', onclick: () => urlInp.value && copyText(urlInp.value, urlInp) }, 'Копіювати');
+  const dlBtn = h('button', { class: 'btn', onclick: () => {
+    const d = p.deploys[0], c = d && findCommit(p, d.commit); download(c ? c.files : p.files, title(p));
+  } }, 'Завантажити .html');
+  const zipBtn = h('button', { class: 'btn', onclick: () => { const d = p.deploys[0], c = d && findCommit(p, d.commit); downloadZip(c ? c.files : p.files, title(p)); } }, 'ZIP для GitHub');
+  const noteBox = h('p', { class: 'muted sm' });
+  const warnBox = h('div', { class: 'warn', hidden: true });
+  const canPub = !!(caps && caps.publish); let slugEdited = false;
+  const slugInp = h('input', { class: 'inp', maxlength: '40', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'nazva-saitu' });
+  slugInp.value = p.pub && caps ? p.pub.slug.slice(caps.prefix.length) : slug(title(p)).slice(0, 40).replace(/-+$/, '');
+  slugInp.addEventListener('input', () => { slugEdited = true; const v = slugInp.value.toLowerCase().replace(/[^a-z0-9-]+/g, '-'); if (v !== slugInp.value) slugInp.value = v; });
+  let unpubArm = 0;
+  const unpubBtn = h('button', { class: 'btn danger', hidden: !p.pub, onclick: async () => {
+    if (!unpubArm) { unpubBtn.textContent = 'Точно зняти? Натисніть ще раз'; unpubArm = setTimeout(() => { unpubArm = 0; unpubBtn.textContent = 'Зняти з публікації'; }, 3500); return; }
+    clearTimeout(unpubArm); unpubArm = 0; unpubBtn.textContent = 'Зняти з публікації';
+    try { await api('DELETE', 'api/publish/' + p.pub.slug, undefined, { 'X-Site-Token': p.pub.token }); } catch (e) { if (e.status !== 404) return toast('Не вдалося: ' + e.message); }
+    p.pub = null; p.deploys.forEach(d => { delete d.url; }); touch(); toast('Сайт знято з публікації'); refresh();
+  } }, 'Зняти з публікації');
+  const shareBtn = navigator.share ? h('button', { class: 'btn', onclick: () => urlInp.value && navigator.share({ title: title(p), url: urlInp.value }).catch(() => {}) }, 'Надіслати') : null;
+  let tk = 0;
+  function pill(kind, text) { pillBox.replaceChildren(h('span', { class: 'pill ' + kind }, [h('span', { class: 'dot' }), text])); }
+  async function refresh() {
+    const my = ++tk, live = p.deploys[0];
+    if (!deploying) pill(live ? 'live' : '', live ? 'Live · ' + ago(live.t) : 'Не опубліковано');
+    const ch = changes(p);
+    deployBtn.lastChild.textContent = ch.length ? 'Закомітити й задеплоїти (' + ch.length + ')' : 'Задеплоїти останній коміт';
+    listBox.replaceChildren();
+    const rows = p.deploys.slice(0, 5);
+    const links = await Promise.all(rows.map((d, i) => { if (d.url) return Promise.resolve(i === 0 ? d.url : ''); const c = findCommit(p, d.commit); return c ? makeLink(c.files, title(p)) : Promise.resolve(''); }));
+    if (my !== tk) return;
+    if (links[0]) { urlInp.value = links[0]; openA.href = links[0]; } else { urlInp.value = ''; openA.removeAttribute('href'); }
+    [copyBtn, dlBtn, zipBtn, shareBtn].forEach(b => { if (b) b.toggleAttribute('disabled', !links[0]); });
+    openA.style.opacity = links[0] ? '' : '.5'; openA.style.pointerEvents = links[0] ? '' : 'none';
+    const longLink = links[0] && links[0].includes('#/');
+    noteBox.textContent = !links[0] ? '' : longLink ? 'Розмір посилання: ' + fmtSize(links[0].length) + (links[0].length > 60000 ? ' — довге: месенджери можуть його обрізати. Для надійного поширення завантажте ZIP і розмістіть на GitHub/Render.' : '') : 'Коротка адреса працює, поки працює ваш сервер.';
+    unpubBtn.hidden = !p.pub;
+    const nodur = canPub && caps.storage && !caps.storage.durable;
+    warnBox.hidden = !nodur; if (nodur) warnBox.textContent = 'Сховище сервера тимчасове: після перезапуску Render опубліковані сайти зникнуть. Підключіть PostgreSQL (змінна DATABASE_URL на Render).';
+    rows.forEach((d, i) => {
+      const c = findCommit(p, d.commit);
+      listBox.append(h('div', { class: 'item' },
+        h('span', { class: 'pill ' + (i === 0 ? 'live' : '') }, [h('span', { class: 'dot' }), i === 0 ? 'Live' : 'Старий']),
+        h('div', { class: 'meta' }, h('div', { class: 't' }, c ? c.msg : '—'),
+          h('div', { class: 'muted sm' }, [h('code', { class: 'h' }, d.commit), ' · ' + ago(d.t)])),
+        links[i] ? h('a', { class: 'btn sm', href: links[i], target: '_blank', rel: 'noopener' }, 'Відкрити') : null));
+    });
+    if (!rows.length) listBox.append(h('p', { class: 'muted sm' }, 'Деплоїв ще не було.'));
+  }
+  async function run() {
+    if (deploying) return; deploying = true; deployBtn.setAttribute('disabled', ''); term.hidden = false; term.replaceChildren(); pill('build', 'Deploying…');
+    const log = (t, cls) => { term.append(h('div', {}, [h('span', { class: 'arrow' }, cls ? '' : '==> '), h('span', { class: cls || '' }, t)])); term.scrollTop = term.scrollHeight; };
+    try {
+      const part = slugInp.value.trim().replace(/^-+|-+$/g, '');
+      await doDeploy(p, log, undefined, canPub ? { part: part || undefined, exact: slugEdited && !!part } : undefined); renderFiles();
+      deploying = false; pill('live', 'Live · щойно');
+    } catch (e) { deploying = false; pill('fail', 'Помилка'); log(String(e && e.message || e), 'err'); }
+    deployBtn.removeAttribute('disabled'); refresh();
+  }
+  nameInp.addEventListener('input', () => { p.name = nameInp.value; $('#nameInput').value = nameInp.value; touch(); updateUrl(); clearTimeout(nameInp._t); nameInp._t = setTimeout(refresh, 250); if (!p.pub && !slugEdited) slugInp.value = slug(title(p)).slice(0, 40).replace(/-+$/, ''); });
+  root.append(
+    h('h3', {}, [h('span', { html: ic('up') }), 'Деплой', h('span', { class: 'pill' }, 'Static Site')]),
+    h('div', { style: 'margin-top:6px' }, pillBox),
+    h('label', {}, 'Назва сайту (у посиланні)'), nameInp,
+    canPub ? [h('label', {}, 'Адреса: ' + caps.prefix + 'назва'), h('div', { class: 'slugrow' }, h('span', { class: 'pre' }, caps.prefix), slugInp),
+      h('p', { class: 'muted sm', style: 'margin-top:6px' }, 'Латиниця, цифри та дефіс. Зміна адреси вимкне стару.')] : null,
+    h('label', {}, 'Посилання на сайт'), urlInp,
+    h('div', { class: 'row' }, copyBtn, openA, shareBtn, dlBtn, zipBtn), noteBox, warnBox,
+    h('div', { class: 'row' }, unpubBtn),
+    h('div', { class: 'row' }, deployBtn), term,
+    h('h4', {}, 'Деплої'), listBox,
+    h('p', { class: 'muted sm', style: 'margin-top:14px' }, canPub ? 'Сайт публікується на вашому сервері за короткою адресою. Файли сайту зберігаються на сервері.' : 'Сервера немає, тому сайт публікується як довге посилання, що містить усі файли.'));
+  showSheet(root); refresh();
+}
+$('#deployBtn').onclick = openDeploy;
+
+/* ================= ШІ-майстер ================= */
+async function aiHealth() {
+  try {
+    const r = await fetch(new URL('api/health', BASE), { cache: 'no-store' }); if (!r.ok) return null;
+    const j = await r.json(); return j && typeof j.ai === 'boolean' ? j : null;
+  } catch (e) { return null; }
+}
+async function aiGenerate(o, onProgress, signal) {
+  const headers = { 'Content-Type': 'application/json' }; if (o.password) headers['X-App-Password'] = o.password;
+  let res;
+  try { res = await fetch(new URL('api/generate', BASE), { method: 'POST', headers, signal, body: JSON.stringify({ prompt: o.prompt, name: o.name, images: o.images }) }); }
+  catch (e) { if (e.name === 'AbortError') throw e; throw new Error('Немає зв’язку із сервером'); }
+  if (!res.ok) {
+    let msg = 'Помилка сервера (' + res.status + ')'; try { msg = (await res.json()).error || msg; } catch (e) {}
+    const err = new Error(msg); err.status = res.status; throw err;
+  }
+  const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '', result = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
+        let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+        if (ev.t === 'progress') onProgress(ev.chars); else if (ev.t === 'error') throw new Error(ev.message); else if (ev.t === 'done') result = ev;
+      }
+    }
+  } finally { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (e) {} }
+  if (!result) throw new Error('З’єднання перервалося до завершення. Спробуйте ще раз.');
+  return result;
+}
+const EXAMPLES = [
+  ['Кав’ярня', 'Лендінг кав’ярні «Зерно» в Києві: теплий затишний стиль, меню з цінами, наші бариста, графік роботи, карта проїзду та кнопка «Забронювати столик».'],
+  ['Портфоліо', 'Сайт-портфоліо фотографа: мінімалістичний чорно-білий дизайн, велика галерея з категоріями, сторінка «Про мене» та форма для замовлення зйомки.'],
+  ['Візитка майстра', 'Сайт-візитка майстра з ремонту техніки: послуги й ціни, переваги, відгуки клієнтів, велика кнопка «Подзвонити» та форма заявки.']
+];
+function openAI() {
+  let imgs = [], busy = false, ctrl = null;
+  const desc = h('textarea', { class: 'inp', rows: '6', maxlength: '4000', placeholder: 'Опишіть сайт: про що він, для кого, який стиль, які розділи потрібні…' });
+  const nameInp = h('input', { class: 'inp', maxlength: '60', placeholder: 'Авто — ШІ придумає', autocomplete: 'off' });
+  const pwInp = h('input', { class: 'inp', type: 'password', placeholder: 'Пароль', autocomplete: 'off' });
+  try { pwInp.value = localStorage.getItem(PW_KEY) || ''; } catch (e) {}
+  const pwBox = h('div', { hidden: true }, h('label', {}, 'Пароль доступу до ШІ'), pwInp);
+  const chips = h('div', { class: 'chips' });
+  const photoIn = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
+  const status = h('p', { class: 'muted sm' }, 'Перевіряємо сервер ШІ…');
+  const warn = h('div', { class: 'warn', hidden: true });
+  const go = h('button', { class: 'btn primary wide', disabled: true, onclick: start }, [h('span', { html: ic('spark') }), 'Створити і задеплоїти']);
+  const addBtn = h('button', { type: 'button', class: 'btn', onclick: () => photoIn.click() }, [h('span', { html: ic('image') }), 'Додати фото']);
+  const names = ['Надсилаємо опис', 'ШІ пише код', 'Збираємо проєкт', 'Коміт і деплой'];
+  const rows = names.map(t => h('div', { class: 'st' }, [h('span', { class: 'dot' }), h('span', {}, t)]));
+  const counter = h('span', { class: 'muted sm' });
+  const stepsBox = h('div', { class: 'steps', hidden: true }, rows, counter);
+  function setStep(i) {
+    rows.forEach((r, k) => { r.className = 'st' + (k < i ? ' done' : k === i ? ' on' : ''); const m = r.firstChild; m.className = k < i ? 'ck' : k === i ? 'spin' : 'dot'; m.textContent = k < i ? '✓' : ''; });
+  }
+  function lock(v) { busy = v; [desc, nameInp, pwInp].forEach(x => { x.disabled = v; }); addBtn.disabled = v; go.disabled = v; }
+  function showWarn(t) { warn.textContent = t; warn.hidden = !t; }
+  function renderChips() {
+    chips.replaceChildren(...imgs.map(i => h('div', { class: 'chip' }, h('img', { src: i.data, alt: i.name }),
+      h('button', { type: 'button', 'aria-label': 'Прибрати', onclick: () => { imgs = imgs.filter(x => x !== i); renderChips(); } }, '×'))));
+  }
+  photoIn.addEventListener('change', async () => {
+    const list = Array.from(photoIn.files); photoIn.value = '';
+    for (const f of list) {
+      if (imgs.length >= 12) { toast('Максимум 12 фото'); break; }
+      const e = isImg(f.name) ? ext(f.name) : ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[f.type];
+      if (!e) { toast('Формат не підтримується: ' + f.name); continue; }
+      let base = slug(f.name.replace(/\.[^.]+$/, '')); if (base === 'site') base = 'photo';
+      let nm = base + '.' + e, k = 2; while (imgs.some(i => i.name === nm)) nm = base + '-' + (k++) + '.' + e;
+      const r = await prepImage(f, nm); imgs.push({ name: nm, data: r.data, w: r.w, h: r.h }); renderChips();
+    }
+  });
+  async function start() {
+    const text = desc.value.trim();
+    if (text.length < 10) { toast('Опишіть сайт детальніше'); return desc.focus(); }
+    try { if (pwInp.value) localStorage.setItem(PW_KEY, pwInp.value); } catch (e) {}
+    showWarn(''); lock(true); stepsBox.hidden = false; counter.textContent = ''; setStep(0);
+    ctrl = new AbortController(); sheetCancel = () => { if (ctrl) ctrl.abort(); };
+    try {
+      await wait(250); setStep(1);
+      const res = await aiGenerate({ prompt: text, name: nameInp.value.trim(), password: pwInp.value, images: imgs.map(i => ({ name: i.name, w: i.w, h: i.h })) },
+        n => { counter.textContent = 'Написано ' + n.toLocaleString('uk-UA') + ' символів коду…'; }, ctrl.signal);
+      setStep(2);
+      const files = Object.assign({}, res.files); imgs.forEach(i => { files[i.name] = i.data; });
+      const nm = (res.name || nameInp.value.trim() || 'Новий сайт').slice(0, 60);
+      const p = { id: rid() + rid(), name: nm, files, updated: Date.now(), deploys: [],
+        commits: [{ id: rid(), msg: 'Створено ШІ-майстром', t: Date.now(), files: Object.assign({}, files) }] };
+      projects.push(p); const saved = persist();
+      setStep(3);
+      const link = await doDeploy(p, () => {}, false);
+      sheetCancel = null; renderHome();
+      const extra = [];
+      if (res.truncated) extra.push('ШІ обірвав відповідь — частина сайту може бути неповною. Спробуйте простіший опис.');
+      if (!saved) extra.push('Не вдалося зберегти проєкт у браузері (мало місця).');
+      if (link.includes('#/') && link.length > 60000) extra.push('Посилання довге (' + fmtSize(link.length) + '): месенджери можуть його обрізати. Завантажте ZIP у вікні «Деплой».');
+      if (caps && caps.publish && link.includes('#/')) extra.push('Сервер публікації недоступний — створено довге посилання.');
+      showReady(p, link, extra);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      stepsBox.hidden = true; lock(false); sheetCancel = null;
+      if (e.status === 401) { pwBox.hidden = false; try { localStorage.removeItem(PW_KEY); } catch (x) {} }
+      showWarn(e.message || 'Не вдалося створити сайт');
+    }
+  }
+  const ex = h('div', { class: 'ex' }, EXAMPLES.map(x => h('button', { type: 'button', class: 'btn sm', onclick: () => { desc.value = x[1]; desc.focus(); } }, x[0])));
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('spark') }), 'ШІ-майстер']),
+    status, warn,
+    h('label', {}, 'Опишіть сайт'), desc, ex,
+    h('label', {}, 'Назва сайту (необов’язково)'), nameInp,
+    h('label', {}, 'Фото для сайту (необов’язково)'), h('div', {}, addBtn), chips, photoIn,
+    pwBox,
+    h('div', { class: 'row' }, go),
+    stepsBox));
+  aiHealth().then(j => {
+    if (j) caps = j;
+    if (!j) { status.textContent = ''; showWarn('ШІ працює лише коли сайт запущено через сервер (Render → Web Service з файлом server.js) і задано GEMINI_API_KEY. Зараз сервера ШІ не знайдено.'); return; }
+    if (!j.ai) { status.textContent = ''; showWarn('На сервері не задано змінну GEMINI_API_KEY.'); return; }
+    status.textContent = 'ШІ готовий. Створення займає приблизно 30–90 секунд.'; pwBox.hidden = !j.auth; if (!busy) go.disabled = false;
+  });
+}
+function showReady(p, link, extra) {
+  const frame = h('iframe', { sandbox: 'allow-scripts', title: 'Попередній перегляд', style: 'width:100%;height:240px;border:1px solid var(--line);border-radius:8px;background:#fff' });
+  frame.srcdoc = buildDoc(p.files, {});
+  const urlInp = h('input', { class: 'inp mono', readonly: true, value: link, style: 'font-size:12px', onfocus: e => e.target.select() });
+  showSheet(h('div', {},
+    h('h3', {}, [h('span', { html: ic('spark') }), title(p), h('span', { class: 'pill live' }, [h('span', { class: 'dot' }), 'Live'])]),
+    h('div', { class: 'ok' }, 'Сайт створено, закомічено і задеплоєно автоматично.'),
+    extra.map(t => h('div', { class: 'warn' }, t)),
+    h('div', { style: 'margin-top:12px' }, frame),
+    h('label', {}, 'Адреса сайту'), urlInp,
+    h('div', { class: 'row' },
+      h('a', { class: 'btn primary', href: link, target: '_blank', rel: 'noopener' }, 'Відкрити сайт'),
+      h('button', { class: 'btn', onclick: () => copyText(link, urlInp) }, 'Копіювати')),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn', onclick: () => { closeSheet(); openProject(p.id); } }, 'Редагувати проєкт'),
+      h('button', { class: 'btn', onclick: () => { closeSheet(); openAI(); } }, 'Створити ще'))));
+}
+$('#aiBtn').onclick = openAI; $('#aiHero').onclick = openAI; $('#cloudBtn').onclick = openCloud;
+function flushNow() { if (cur) persist(); }          // збереження при закритті/згортанні вкладки
+addEventListener('pagehide', flushNow);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushNow(); else if (syncCode && caps && caps.sync && Date.now() - lastSyncAt > 30000) syncNow(false);
+});
+addEventListener('online', () => { if (syncCode && caps && caps.sync) syncNow(false); });
+
+/* ================= маршрути ================= */
+async function route() {
+  const m = location.hash.match(/^#\/([^\/]*)\/(.+)$/);
+  if (m) {
+    showView('viewer');
+    try {
+      const d = await unpack(m[2]);
+      document.title = d.n || 'Сайт';
+      vFiles = d.f; vEntry = null; setFrame('vframe', buildDoc(d.f, { console: false, nav: true }));
+      $('#badge').href = BASE;
+    } catch (e) {
+      setFrame('vframe', '<body style="font:16px sans-serif;padding:24px;background:#0d1117;color:#e6edf3">Не вдалося відкрити посилання. Воно пошкоджене або неповне.</body>');
+    }
+  } else { document.title = 'Clidex Editor'; showView('home'); renderHome(); }
+}
+$('#badgeX').onclick = e => { e.preventDefault(); e.stopPropagation(); $('#badge').hidden = true; };
+addEventListener('popstate', () => { if (!$('#project').hidden || !location.hash) goHome(); });
+addEventListener('hashchange', route);
+const ready = loadStore();
+const capsP = aiHealth().then(j => { caps = j; });
+Promise.race([ready, wait(2500)]).then(route);
+Promise.all([ready, capsP]).then(() => {
+  if (!$('#home').hidden) renderHome();
+  updateCloudUi();
+  if (syncCode && !location.hash.startsWith('#/')) { if (caps && caps.sync) syncNow(false); else setSync('error', 'Сервер недоступний'); }
+});
+})();
+</script>
+</body>
+</html>

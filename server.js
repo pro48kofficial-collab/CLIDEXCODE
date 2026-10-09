@@ -220,6 +220,24 @@ NAME: <short site name, max 40 characters, in the user's language>
 <<<END>>>
 (and so on for each file)`;
 
+const SYSTEM_EDIT = `You are a senior front-end developer editing an EXISTING static website inside a mobile website builder.
+You receive the current project files and a change request. Make exactly the requested change with minimal collateral changes; keep the existing design, structure, file names and content that were not asked to change.
+
+RULES
+- Output ONLY files that you changed or created, each COMPLETE (never diffs, never "rest unchanged" placeholders).
+- To remove a file output a line: <<<DELETE: path>>>
+- Same technical limits as before: plain static HTML/CSS/JS, no build tools, no external CDNs/images/fonts, mobile-first, text in the language already used by the site.
+- Binary files (images) are listed by name only; you may reference them by exact name but cannot edit them.
+- There is no backend: forms must work client-side and/or use mailto:/tel: links.
+- The code must run without errors; double-check selectors, IDs and file names against each other.
+
+OUTPUT FORMAT (strict, no prose, no markdown fences):
+SUMMARY: <one short sentence in the user's language describing what you changed>
+<<<FILE: path>>>
+...complete file...
+<<<END>>>
+(repeat per changed file; optional <<<DELETE: path>>> lines)`;
+
 const hits = new Map();
 function limited(ip, bucket, limit) {
   const k = (bucket || 'ai') + '|' + ip, now = Date.now(), list = (hits.get(k) || []).filter(t => now - t < 3600e3);
@@ -251,7 +269,10 @@ function parseOutput(text) {
     const fence = body.match(/^\s*```[\w-]*\r?\n([\s\S]*?)\r?\n```\s*$/); if (fence) body = fence[1];
     files[n] = body.replace(/\r\n/g, '\n').replace(/\s+$/, '') + '\n'; count++;
   }
-  return { name, files };
+  const deleted = []; const dre = /<<<DELETE:\s*([^\n>]+?)\s*>>>/g; let dm;
+  while ((dm = dre.exec(text)) && deleted.length < 20) { const n = dm[1].trim().replace(/^\.?\//, ''); if (OK_NAME.test(n) && !n.includes('..')) deleted.push(n); }
+  const summary = ((text.match(/^\s*SUMMARY:\s*(.+)$/m) || [])[1] || '').trim().slice(0, 200);
+  return { name, files, deleted, summary };
 }
 
 function userMessage(b) {
@@ -263,13 +284,26 @@ function userMessage(b) {
 
 async function generate(req, res) {
   let body;
-  try { body = JSON.parse(await readBody(req, 64 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
+  try { body = JSON.parse(await readBody(req, 700 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
+  const edit = body.mode === 'edit';
   const prompt = String(body.prompt || '').trim().slice(0, 4000);
   if (prompt.length < 5) return json(res, 400, { error: 'Опишіть сайт трохи детальніше' });
   const images = (Array.isArray(body.images) ? body.images : []).slice(0, 12)
     .map(i => ({ name: String(i && i.name || '').slice(0, 80), w: +i.w || 0, h: +i.h || 0 }))
     .filter(i => OK_NAME.test(i.name) && !i.name.includes('..'));
-  const msg = userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
+  let msg;
+  if (edit) {
+    const src = body.files && typeof body.files === 'object' ? body.files : {}; let total = 0, parts = [], bin = [];
+    for (const k of Object.keys(src).slice(0, 80)) {
+      if (!OK_NAME.test(k) || k.includes('..')) continue;
+      const v = src[k]; if (typeof v !== 'string') continue;
+      if (v.startsWith('data:') || !OK_EXT.test(k)) { bin.push(k); continue; }
+      total += v.length; if (total > 400000) return json(res, 400, { error: 'Проєкт завеликий для правок ШІ' });
+      parts.push('<<<FILE: ' + k + '>>>\n' + v + '\n<<<END>>>');
+    }
+    if (!parts.length) return json(res, 400, { error: 'У проєкті немає текстових файлів' });
+    msg = 'CURRENT PROJECT FILES:\n' + parts.join('\n') + (bin.length ? '\n\nBinary files (names only): ' + bin.join(', ') : '') + '\n\nCHANGE REQUEST:\n' + prompt + '\n\nApply the change now, in the required output format.';
+  } else msg = userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
   const send = o => { try { res.write(JSON.stringify(o) + '\n'); } catch (e) {} };
@@ -281,7 +315,7 @@ async function generate(req, res) {
       method: 'POST', signal: ac.signal,
       headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
+        systemInstruction: { parts: [{ text: edit ? SYSTEM_EDIT : SYSTEM }] },
         contents: [{ role: 'user', parts: [{ text: msg }] }],
         generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
       })
@@ -316,7 +350,10 @@ async function generate(req, res) {
     }
     if (buf.trim()) handle(buf.trim());
     const out = parseOutput(text);
-    if (!out.files['index.html'] && !Object.keys(out.files).some(n => /\.html?$/i.test(n))) {
+    if (edit && !Object.keys(out.files).length && !out.deleted.length) {
+      send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Відповідь завелика. Опишіть меншу зміну.' : blocked || /SAFETY|BLOCK|PROHIBITED|RECITATION|SPII/.test(stop) ? 'Gemini відхилив запит. Змініть формулювання.' : 'ШІ не запропонував змін. Опишіть точніше, що змінити.' });
+    } else if (edit) send({ t: 'done', summary: out.summary, files: out.files, deleted: out.deleted, truncated: stop === 'MAX_TOKENS' });
+    else if (!out.files['index.html'] && !Object.keys(out.files).some(n => /\.html?$/i.test(n))) {
       send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Сайт вийшов завеликим. Опишіть простіший або коротший.'
         : blocked || /SAFETY|BLOCK|PROHIBITED|RECITATION|SPII/.test(stop) ? 'Gemini відхилив запит. Змініть опис сайту.'
         : 'ШІ не повернув коректний сайт. Спробуйте ще раз.' });
@@ -433,7 +470,7 @@ const server = http.createServer(async (req, res) => {
       return req.method === 'HEAD' ? res.end() : fs.createReadStream(INDEX).pipe(res);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
-    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
+    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
     const site = SITE_RE.exec(url);
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     if (req.method === 'POST' && url === '/api/generate') {

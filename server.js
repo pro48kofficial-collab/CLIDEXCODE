@@ -208,6 +208,7 @@ HARD RULES
 - Make the design distinctive and intentional: a clear colour palette, strong typography hierarchy, generous spacing, subtle motion. Avoid generic template looks. Keep contrast accessible and use semantic HTML.
 - Images: if the user provided image files you may use them ONLY by their exact file names (given below with pixel sizes), e.g. <img src="photo1.jpg" alt="...">. Never invent other image files. For any other visuals use inline SVG, CSS gradients or emoji.
 - There is no backend. Contact forms must work client-side (validate and show a confirmation message) and/or use mailto:/tel: links. Never rely on localStorage for core functionality.
+- Multiplayer / realtime (only when the user asks for an online or multiplayer game or shared app): include <script src="_mp.js"></script> BEFORE your own script. It defines window.Clidex.room(name, opts) which joins a shared room (up to 16 players, name = room code chosen by players, e.g. from an input; default 'lobby'). opts: onReady(room), onMessage(data, fromId), onState(state), onJoin(player, players), onLeave(player, players), onError(err), name (player nickname). The room object has: id, seat (0,1,2… join order, use it to assign roles like X/O), players [{id, seat, name}], state (last shared state), send(data, toId?) broadcasts a JSON message to the OTHER players, setState(obj) stores a small JSON state (<8KB) on the server that late joiners receive, leave(). Messages are not echoed to the sender: apply your own move locally. Keep game logic deterministic and validate turns on each client. No other networking exists.
 - The code must run without errors. Double-check selectors, IDs and file names against each other.
 
 OUTPUT FORMAT (strict, no prose, no markdown fences, nothing before or after):
@@ -229,6 +230,7 @@ RULES
 - Same technical limits as before: plain static HTML/CSS/JS, no build tools, no external CDNs/images/fonts, mobile-first, text in the language already used by the site.
 - Binary files (images) are listed by name only; you may reference them by exact name but cannot edit them.
 - There is no backend: forms must work client-side and/or use mailto:/tel: links.
+- If the project already uses <script src="_mp.js"></script> (window.Clidex.room multiplayer API), keep using it the same way.
 - The code must run without errors; double-check selectors, IDs and file names against each other.
 
 OUTPUT FORMAT (strict, no prose, no markdown fences):
@@ -417,6 +419,7 @@ async function publish(req, res) {
 async function unpublish(req, res, slug) {
   const site = await getSite(slug); if (!site) return json(res, 404, { error: 'Сайт не знайдено' });
   const t = req.headers['x-site-token']; if (typeof t !== 'string' || site.tokenHash !== sha(t)) return json(res, 403, { error: 'Немає права видаляти цей сайт' });
+  for (const d of (site.domains || [])) { await kvDel('d:' + d); domCache.delete(d); }
   await kvDel('site:' + slug); siteCache.delete(slug); return json(res, 200, { ok: true });
 }
 async function serveSite(req, res, m, search) {
@@ -429,6 +432,7 @@ async function serveSite(req, res, m, search) {
   if (key === '' || key.endsWith('/')) key += 'index.html';
   if (files[key] === undefined && files[key + '.html'] !== undefined) key += '.html';
   if (files[key] === undefined && rest === '') key = Object.keys(files).find(k => /\.html?$/i.test(k)) || key;
+  if (files[key] === undefined && key === '_mp.js') { res.writeHead(200, Object.assign({ 'Content-Type': 'text/javascript; charset=utf-8' }, SITE_HEADERS)); return res.end(req.method === 'HEAD' ? undefined : mpLib(slug)); }
   if (files[key] === undefined) return notFound('Сторінку не знайдено');
   const v = files[key], e = (key.split('.').pop() || '').toLowerCase(); let buf, type = MIMES[e];
   if (/^data:[^,]*;base64,/.test(v)) { buf = Buffer.from(v.slice(v.indexOf(',') + 1), 'base64'); if (!type) type = (v.match(/^data:([^;,]+)/) || [])[1]; }
@@ -461,18 +465,353 @@ async function syncRoute(req, res, url) {
   return json(res, 404, { error: 'Not found' });
 }
 
+/* ---------------- акаунти, репозиторії, стрічка, домени, мультиплеєр ---------------- */
+const RESEND_KEY = process.env.RESEND_API_KEY || '', RESEND_URL = process.env.RESEND_API_URL || 'https://api.resend.com/emails';
+const MAIL_FROM = process.env.MAIL_FROM || 'Clidex Editor <onboarding@resend.dev>';
+const PUBLIC_HOST = (process.env.PUBLIC_HOST || process.env.RENDER_EXTERNAL_HOSTNAME || '').toLowerCase();
+const RENDER_KEY = process.env.RENDER_API_KEY || '', RENDER_SVC = process.env.RENDER_SERVICE_ID || '';
+const NICK_RE = /^[\p{L}\p{N}_-]{3,24}$/u, EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+const DOM_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
+const locks = new Map();
+const withLock = (k, fn) => { const prev = locks.get(k) || Promise.resolve(); const p = prev.then(fn, fn); const t = p.catch(() => {}); locks.set(k, t); t.then(() => { if (locks.get(k) === t) locks.delete(k); }); return p; };
+const jget = async k => { const r = await kvGet(k); return r ? JSON.parse(r) : null; };
+const jset = (k, v) => kvSet(k, JSON.stringify(v));
+const short = uid => uid.slice(0, 16);
+const need = (res, code, msg) => { json(res, code, { error: msg }); return null; };
+async function body(req, res, max) { try { return JSON.parse(await readBody(req, max || 64 * 1024)); } catch (e) { json(res, 400, { error: 'Некоректний запит' }); return null; } }
+const whoCache = new Map();
+async function who(uid) {
+  const c = whoCache.get(uid); if (c && Date.now() - c.t < 60000) return c.p;
+  const p = await jget('u:' + uid); whoCache.set(uid, { t: Date.now(), p }); if (whoCache.size > 500) whoCache.delete(whoCache.keys().next().value); return p;
+}
+const pubProfile = (p, self) => ({ nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined });
+async function acct(req, res, mustHaveProfile) {
+  const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
+  const p = await jget('u:' + uid);
+  if (!p && mustHaveProfile) return need(res, 401, 'Спочатку створіть профіль');
+  return { uid, p };
+}
+async function sendMail(to, subject, text) {
+  if (!RESEND_KEY) { const e = new Error('mail-off'); e.mailOff = true; throw e; }
+  const r = await fetch(RESEND_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + RESEND_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text }) });
+  if (!r.ok) throw new Error('mail-fail ' + r.status);
+}
+
+async function meGet(req, res) { const a = await acct(req, res); if (!a) return; return json(res, 200, { profile: a.p ? pubProfile(a.p, true) : null }); }
+async function mePut(req, res) {
+  const uid = syncUid(req); if (!uid) return json(res, 400, { error: 'Невірний код акаунта' });
+  const b = await body(req, res, 220 * 1024); if (!b) return;
+  return withLock('nick', async () => {
+    let p = await jget('u:' + uid); const isNew = !p; p = p || { created: Date.now(), nick: '', avatar: '', bio: '', email: '', av: '' };
+    if (b.nick !== undefined || isNew) {
+      let nick = String(b.nick == null ? '' : b.nick).trim();
+      if (!nick) { if (p.nick) nick = p.nick; else do { nick = 'user-' + crypto.randomBytes(3).toString('hex'); } while (await kvGet('n:' + nick)); }
+      if (!NICK_RE.test(nick)) return json(res, 400, { error: 'Нік: 3–24 символи — літери, цифри, _ або -' });
+      const key = nick.toLowerCase(), owner = await kvGet('n:' + key);
+      if (owner && owner !== uid) return json(res, 409, { error: 'Цей нік уже зайнятий' });
+      if (p.nick && p.nick.toLowerCase() !== key) await kvDel('n:' + p.nick.toLowerCase());
+      await kvSet('n:' + key, uid); p.nick = nick;
+    }
+    if (b.avatar !== undefined) {
+      if (!b.avatar) p.avatar = '';
+      else if (typeof b.avatar === 'string' && b.avatar.length <= 120000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(b.avatar)) p.avatar = b.avatar;
+      else return json(res, 400, { error: 'Некоректна аватарка' });
+      p.av = Date.now().toString(36);
+    }
+    if (b.bio !== undefined) p.bio = String(b.bio).slice(0, 200);
+    await jset('u:' + uid, p); whoCache.delete(uid);
+    return json(res, 200, { profile: pubProfile(p, true), isNew });
+  });
+}
+async function avatarGet(req, res, nick) {
+  const uid = await kvGet('n:' + nick.toLowerCase()), p = uid && await who(uid);
+  if (!p || !p.avatar) { res.writeHead(404); return res.end(); }
+  const m = p.avatar.match(/^data:([^;]+);base64,(.*)$/), buf = Buffer.from(m[2], 'base64');
+  res.writeHead(200, { 'Content-Type': m[1], 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=600', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' }); res.end(buf);
+}
+
+/* пошта: код підтвердження (прив'язка та вхід з іншого пристрою) */
+const emailKey = e => sha('email:' + e.toLowerCase());
+async function emailStart(req, res, ip) {
+  const b = await body(req, res); if (!b) return;
+  const email = String(b.email || '').trim().toLowerCase(); if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Некоректна пошта' });
+  if (!RESEND_KEY) return json(res, 503, { error: 'Пошта на сервері не налаштована (RESEND_API_KEY). Скористайтесь кодом акаунта.' });
+  if (limited(ip, 'mail', 10) || limited(email, 'mailto', 5)) return json(res, 429, { error: 'Забагато спроб. Спробуйте за годину.' });
+  const uid = syncUid(req), idx = await jget('e:' + emailKey(email)); let mode = 'login';
+  if (uid) { const p = await jget('u:' + uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' }); if (idx && idx.uid !== uid) return json(res, 409, { error: 'Ця пошта вже прив’язана до іншого акаунта. Увійдіть через неї.' }); mode = 'link'; }
+  if (mode === 'login' && !idx) return json(res, 200, { ok: true }); // не розкриваємо, чи є така пошта
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  await jset('ec:' + emailKey(email), { h: sha('ec:' + code), exp: Date.now() + 600000, tries: 0, mode, uid: uid || '' });
+  try { await sendMail(email, 'Код входу Clidex Editor', 'Ваш код: ' + code + '\nДіє 10 хвилин. Якщо це були не ви — просто проігноруйте лист.'); }
+  catch (e) { console.error('mail:', e.message); return json(res, 502, { error: 'Не вдалося надіслати лист' }); }
+  return json(res, 200, { ok: true });
+}
+async function emailVerify(req, res) {
+  const b = await body(req, res); if (!b) return;
+  const email = String(b.email || '').trim().toLowerCase(), code = String(b.code || '').trim(), key = emailKey(email);
+  return withLock('ec:' + key, async () => {
+    const rec = await jget('ec:' + key); const bad = () => json(res, 400, { error: 'Невірний або прострочений код' });
+    if (!rec || rec.exp < Date.now() || rec.tries >= 5) return bad();
+    if (rec.h !== sha('ec:' + code)) { rec.tries++; await jset('ec:' + key, rec); return bad(); }
+    await kvDel('ec:' + key);
+    if (rec.mode === 'link') {
+      const uid = syncUid(req); if (!uid || uid !== rec.uid) return bad();
+      const p = await jget('u:' + uid); if (!p) return bad();
+      if (p.email && p.email !== email) await kvDel('e:' + emailKey(p.email));
+      p.email = email; await jset('u:' + uid, p); whoCache.delete(uid);
+      await jset('e:' + key, { uid, code: req.headers['x-sync-code'] });
+      return json(res, 200, { ok: true, email });
+    }
+    const idx = await jget('e:' + key); if (!idx) return bad();
+    return json(res, 200, { ok: true, code: idx.code });
+  });
+}
+async function emailUnlink(req, res) {
+  const a = await acct(req, res, true); if (!a) return;
+  if (a.p.email) { await kvDel('e:' + emailKey(a.p.email)); a.p.email = ''; await jset('u:' + a.uid, a.p); whoCache.delete(a.uid); }
+  return json(res, 200, { ok: true });
+}
+
+/* репозиторії */
+const REPO_MAX = 3 * 1048576;
+const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))) }; };
+async function repoPut(req, res, pid) {
+  const a = await acct(req, res, true); if (!a) return;
+  const b = await body(req, res, REPO_MAX + 512 * 1024); if (!b) return;
+  const f = b.files; if (!f || typeof f !== 'object' || Array.isArray(f)) return json(res, 400, { error: 'Немає файлів' });
+  const keys = Object.keys(f); let size = 0;
+  if (!keys.length || keys.length > 300) return json(res, 400, { error: 'Некоректна кількість файлів' });
+  for (const k of keys) { if (typeof f[k] !== 'string' || k.length > 200 || /(^|\/)\.\.?(\/|$)|^\/|\\|[\u0000-\u001f]/.test(k)) return json(res, 400, { error: 'Недопустимий файл: ' + k.slice(0, 60) }); size += f[k].length; }
+  if (size > REPO_MAX) return json(res, 400, { error: 'Репозиторій завеликий (понад ' + REPO_MAX / 1048576 + ' МБ)' });
+  const id = short(a.uid).slice(0, 10) + '-' + pid;
+  return withLock('repos', async () => {
+    const idx = (await jget('repos')) || []; const old = idx.find(x => x.id === id);
+    const m = { id, uid: a.uid, name: String(b.name || 'Без назви').slice(0, 60), desc: String(b.desc || '').slice(0, 300), updated: Date.now(), created: old ? old.created : Date.now(), likes: old ? old.likes : 0, forks: old ? old.forks : 0, site: /^[a-z0-9-]{1,80}$/.test(b.site || '') && String(b.site).startsWith(PREFIX) ? b.site : '', n: keys.length, size };
+    await jset('repo:' + id, { files: f });
+    const out = idx.filter(x => x.id !== id); out.unshift(m); await jset('repos', out.slice(0, 3000));
+    return json(res, 200, { id, repo: await repoOut(m, a.uid, null) });
+  });
+}
+async function repoDelete(req, res, pid) {
+  const a = await acct(req, res, true); if (!a) return; const id = short(a.uid).slice(0, 10) + '-' + pid;
+  return withLock('repos', async () => {
+    const idx = (await jget('repos')) || []; if (!idx.some(x => x.id === id)) return json(res, 404, { error: 'Репозиторій не знайдено' });
+    await jset('repos', idx.filter(x => x.id !== id)); await kvDel('repo:' + id); await kvDel('rl:' + id); return json(res, 200, { ok: true });
+  });
+}
+async function repoList(req, res, u) {
+  const me = syncUid(req), q = (u.searchParams.get('q') || '').toLowerCase().slice(0, 60), sort = u.searchParams.get('sort') === 'likes' ? 'likes' : 'new', owner = (u.searchParams.get('owner') || '').toLowerCase();
+  let ownerUid = ''; if (owner) ownerUid = (await kvGet('n:' + owner)) || '-';
+  let list = ((await jget('repos')) || []).filter(m => !ownerUid || m.uid === ownerUid);
+  const outs = await Promise.all(list.map(m => repoOut(m, null, null)));
+  let r = outs.filter(o => !q || (o.name + ' ' + o.desc + ' ' + o.owner).toLowerCase().includes(q));
+  r.sort(sort === 'likes' ? (a, b) => b.likes - a.likes || b.updated - a.updated : (a, b) => b.updated - a.updated);
+  r = r.slice(0, 60);
+  if (me) await Promise.all(r.map(async o => { const ls = (await jget('rl:' + o.id)) || []; o.liked = ls.includes(short(me)); }));
+  return json(res, 200, { repos: r });
+}
+async function repoGet(req, res, id) {
+  const m = ((await jget('repos')) || []).find(x => x.id === id); if (!m) return json(res, 404, { error: 'Репозиторій не знайдено' });
+  const me = syncUid(req), ls = (await jget('rl:' + id)) || [], f = await jget('repo:' + id);
+  return json(res, 200, { repo: await repoOut(m, me, ls), files: f ? f.files : {} });
+}
+async function repoLike(req, res, id) {
+  const a = await acct(req, res, true); if (!a) return;
+  return withLock('repos', async () => {
+    const idx = (await jget('repos')) || [], m = idx.find(x => x.id === id); if (!m) return json(res, 404, { error: 'Репозиторій не знайдено' });
+    const ls = (await jget('rl:' + id)) || [], s = short(a.uid), i = ls.indexOf(s); if (i >= 0) ls.splice(i, 1); else ls.push(s);
+    m.likes = ls.length; await jset('rl:' + id, ls); await jset('repos', idx); return json(res, 200, { liked: i < 0, likes: ls.length });
+  });
+}
+async function repoFork(req, res, id) {
+  return withLock('repos', async () => { const idx = (await jget('repos')) || [], m = idx.find(x => x.id === id); if (!m) return json(res, 404, { error: 'Репозиторій не знайдено' }); m.forks = (m.forks || 0) + 1; await jset('repos', idx); return json(res, 200, { forks: m.forks }); });
+}
+async function userGet(req, res, nick) {
+  const uid = await kvGet('n:' + nick.toLowerCase()), p = uid && await who(uid); if (!p) return json(res, 404, { error: 'Користувача не знайдено' });
+  const me = syncUid(req), list = ((await jget('repos')) || []).filter(m => m.uid === uid);
+  return json(res, 200, { profile: pubProfile(p, false), repos: await Promise.all(list.map(m => repoOut(m, null, null))), me: me === uid });
+}
+
+/* стрічка новин */
+async function feedList(req, res) {
+  const me = syncUid(req), posts = ((await jget('feed')) || []).slice(0, 60), repos = (await jget('repos')) || [];
+  const out = await Promise.all(posts.map(async x => { const p = await who(x.uid), r = x.repo && repos.find(y => y.id === x.repo); return { id: x.id, t: x.t, text: x.text, nick: p ? p.nick : '?', av: p && p.avatar ? p.av : '', likes: x.likes.length, liked: !!(me && x.likes.includes(short(me))), mine: !!me && x.uid === me, repo: r ? { id: r.id, name: r.name } : null }; }));
+  return json(res, 200, { posts: out });
+}
+async function feedPost(req, res, ip) {
+  const a = await acct(req, res, true); if (!a) return;
+  const b = await body(req, res); if (!b) return; const text = String(b.text || '').trim().slice(0, 500);
+  if (text.length < 2) return json(res, 400, { error: 'Напишіть хоча б кілька слів' });
+  if (limited(a.uid, 'feed', 12)) return json(res, 429, { error: 'Забагато публікацій. Спробуйте пізніше.' });
+  return withLock('feed', async () => {
+    const f = (await jget('feed')) || [], post = { id: crypto.randomBytes(6).toString('hex'), uid: a.uid, t: Date.now(), text, repo: typeof b.repo === 'string' ? b.repo.slice(0, 60) : '', likes: [] };
+    f.unshift(post); await jset('feed', f.slice(0, 300)); return json(res, 200, { id: post.id });
+  });
+}
+async function feedLike(req, res, id) {
+  const a = await acct(req, res, true); if (!a) return;
+  return withLock('feed', async () => {
+    const f = (await jget('feed')) || [], x = f.find(y => y.id === id); if (!x) return json(res, 404, { error: 'Допис не знайдено' });
+    const s = short(a.uid), i = x.likes.indexOf(s); if (i >= 0) x.likes.splice(i, 1); else x.likes.push(s);
+    await jset('feed', f); return json(res, 200, { liked: i < 0, likes: x.likes.length });
+  });
+}
+async function feedDelete(req, res, id) {
+  const a = await acct(req, res, true); if (!a) return;
+  return withLock('feed', async () => {
+    const f = (await jget('feed')) || [], x = f.find(y => y.id === id); if (!x) return json(res, 404, { error: 'Допис не знайдено' });
+    if (x.uid !== a.uid) return json(res, 403, { error: 'Це не ваш допис' });
+    await jset('feed', f.filter(y => y.id !== id)); return json(res, 200, { ok: true });
+  });
+}
+
+/* власні домени */
+const domCache = new Map();
+async function domainSlug(host) {
+  const c = domCache.get(host); if (c && Date.now() - c.t < 30000) return c.slug;
+  const slug = (await kvGet('d:' + host)) || ''; domCache.set(host, { t: Date.now(), slug }); if (domCache.size > 300) domCache.delete(domCache.keys().next().value); return slug;
+}
+const isMainHost = h => !h || h === 'localhost' || net.isIP(h) || h === PUBLIC_HOST || h.endsWith('.onrender.com');
+async function renderAddDomain(domain) {
+  if (!RENDER_KEY || !RENDER_SVC) return '';
+  try {
+    const r = await fetch((process.env.RENDER_API_URL || 'https://api.render.com/v1') + '/services/' + RENDER_SVC + '/custom-domains', { method: 'POST', headers: { Authorization: 'Bearer ' + RENDER_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ name: domain }) });
+    return r.ok ? 'render' : 'render-fail:' + r.status;
+  } catch (e) { return 'render-fail'; }
+}
+async function domainAdd(req, res) {
+  const b = await body(req, res); if (!b) return;
+  const slug = String(b.slug || ''), domain = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+  const site = await getSite(slug); if (!site) return json(res, 404, { error: 'Спочатку опублікуйте сайт' });
+  if (typeof b.token !== 'string' || site.tokenHash !== sha(b.token)) return json(res, 403, { error: 'Немає права змінювати цей сайт' });
+  if (!DOM_RE.test(domain) || domain === PUBLIC_HOST || domain.endsWith('.onrender.com')) return json(res, 400, { error: 'Некоректний домен. Приклад: mysite.com' });
+  const cur = await kvGet('d:' + domain); if (cur && cur !== slug) return json(res, 409, { error: 'Цей домен уже використовується іншим сайтом' });
+  if (!cur && (site.domains || []).length >= 5) return json(res, 400, { error: 'Максимум 5 доменів на сайт' });
+  await kvSet('d:' + domain, slug); domCache.delete(domain);
+  if (!(site.domains || []).includes(domain)) { site.domains = (site.domains || []).concat(domain); await kvSet('site:' + slug, JSON.stringify(site)); siteCache.set(slug, { t: Date.now(), site }); }
+  const render = await renderAddDomain(domain);
+  return json(res, 200, { domain, domains: site.domains, target: PUBLIC_HOST || String(req.headers.host || '').split(':')[0], render });
+}
+async function domainRemove(req, res, domain) {
+  const slug = await kvGet('d:' + domain); if (!slug) return json(res, 404, { error: 'Домен не знайдено' });
+  const site = await getSite(slug); const t = req.headers['x-site-token'];
+  if (!site || typeof t !== 'string' || site.tokenHash !== sha(t)) return json(res, 403, { error: 'Немає права змінювати цей сайт' });
+  await kvDel('d:' + domain); domCache.delete(domain); site.domains = (site.domains || []).filter(x => x !== domain);
+  await kvSet('site:' + slug, JSON.stringify(site)); siteCache.set(slug, { t: Date.now(), site }); return json(res, 200, { ok: true, domains: site.domains });
+}
+async function domainCheck(req, res, domain) {
+  if (!DOM_RE.test(domain)) return json(res, 400, { error: 'Некоректний домен' });
+  const target = PUBLIC_HOST || String(req.headers.host || '').split(':')[0], dns = require('dns').promises, out = { target, cname: [], a: [], ok: false };
+  try { out.cname = await dns.resolveCname(domain); } catch (e) {}
+  try { out.a = await dns.resolve4(domain); } catch (e) {}
+  let ta = []; try { ta = await dns.resolve4(target); } catch (e) {}
+  out.ok = out.cname.some(c => c.toLowerCase() === target) || (out.a.length > 0 && out.a.some(x => ta.includes(x)));
+  out.served = !!(await kvGet('d:' + domain)); return json(res, 200, out);
+}
+
+/* мультиплеєр: кімнати в памʼяті, SSE + POST */
+const rooms = new Map(); let rtSeq = 0;
+const MP_LIB = `(function(){
+  var BASE = window.__CLX_RT__ || new URL('/api/rt/', location.href).href, SCOPE = window.__CLX_SCOPE__ || '__SCOPE__';
+  function Room(name, o) {
+    var self = this; o = o || {}; this.name = name; this.id = null; this.seat = -1; this.players = []; this.state = null; this.ready = false;
+    var url = BASE + SCOPE + '/' + encodeURIComponent(name), q = o.name ? '?name=' + encodeURIComponent(o.name) : '';
+    function post(obj) { obj.id = self.id; return fetch(url + '/send', { method: 'POST', body: JSON.stringify(obj) }).catch(function (e) { if (o.onError) o.onError(e); }); }
+    var es = this.es = new EventSource(url + '/events' + q);
+    es.addEventListener('hello', function (e) { var d = JSON.parse(e.data); self.id = d.id; self.seat = d.seat; self.players = d.players; self.state = d.state; self.ready = true; if (o.onReady) o.onReady(self); if (d.state != null && o.onState) o.onState(d.state); });
+    es.addEventListener('join', function (e) { var d = JSON.parse(e.data); self.players = d.players; if (o.onJoin) o.onJoin(d.player, self.players); });
+    es.addEventListener('leave', function (e) { var d = JSON.parse(e.data); self.players = d.players; if (o.onLeave) o.onLeave(d.player, self.players); });
+    es.addEventListener('msg', function (e) { var d = JSON.parse(e.data); if (o.onMessage) o.onMessage(d.data, d.from); });
+    es.addEventListener('state', function (e) { var d = JSON.parse(e.data); self.state = d.data; if (o.onState && d.from !== self.id) o.onState(d.data, d.from); });
+    es.addEventListener('full', function () { es.close(); if (o.onError) o.onError(new Error('Кімната заповнена')); });
+    this.send = function (data, to) { return post({ type: 'msg', data: data, to: to }); };
+    this.setState = function (s) { self.state = s; return post({ type: 'state', data: s }); };
+    this.leave = function () { es.close(); };
+  }
+  window.Clidex = { room: function (name, o) { return new Room(name, o); } };
+})();`;
+const mpLib = scope => MP_LIB.replace('__SCOPE__', scope);
+function roomRoute(req, res, u) {
+  const m = u.pathname.match(/^\/api\/rt\/([a-z0-9-]{1,60})\/([A-Za-z0-9_-]{1,40})\/(events|send)$/); if (!m) return false;
+  const CORSH = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+  if (req.method === 'OPTIONS') { res.writeHead(204, CORSH); res.end(); return true; }
+  const key = m[1] + '/' + m[2];
+  if (m[3] === 'events' && req.method === 'GET') {
+    let room = rooms.get(key);
+    if (!room) { if (rooms.size >= 2000) { res.writeHead(503, CORSH); res.end(); return true; } room = { clients: new Map(), state: null }; rooms.set(key, room); }
+    res.writeHead(200, Object.assign({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }, CORSH));
+    const ev = (r, name, d) => { try { r.write('event: ' + name + '\ndata: ' + JSON.stringify(d) + '\n\n'); } catch (e) {} };
+    if (room.clients.size >= 16) { ev(res, 'full', {}); res.end(); return true; }
+    const used = new Set(Array.from(room.clients.values()).map(c => c.seat)); let seat = 0; while (used.has(seat)) seat++;
+    const id = 'p' + (++rtSeq).toString(36) + crypto.randomBytes(2).toString('hex'), name = String(u.searchParams.get('name') || 'Гравець ' + (seat + 1)).slice(0, 30);
+    const me = { id, seat, name, res, n: 0, t: Date.now() }; room.clients.set(id, me);
+    const players = () => Array.from(room.clients.values()).map(c => ({ id: c.id, seat: c.seat, name: c.name }));
+    ev(res, 'hello', { id, seat, players: players(), state: room.state });
+    room.clients.forEach(c => { if (c.id !== id) ev(c.res, 'join', { player: { id, seat, name }, players: players() }); });
+    const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch (e) {} }, 25000);
+    req.on('close', () => { clearInterval(hb); room.clients.delete(id); room.clients.forEach(c => ev(c.res, 'leave', { player: { id, seat, name }, players: players() })); if (!room.clients.size) rooms.delete(key); });
+    return true;
+  }
+  if (m[3] === 'send' && req.method === 'POST') {
+    readBody(req, 12 * 1024).then(raw => {
+      let b; try { b = JSON.parse(raw); } catch (e) { res.writeHead(400, CORSH); return res.end('bad'); }
+      const room = rooms.get(key), me = room && room.clients.get(String(b.id || ''));
+      if (!me) { res.writeHead(404, CORSH); return res.end('no room'); }
+      const now = Date.now(); if (now - me.t > 1000) { me.t = now; me.n = 0; } if (++me.n > 40) { res.writeHead(429, CORSH); return res.end('slow'); }
+      const send = (r, name, d) => { try { r.write('event: ' + name + '\ndata: ' + JSON.stringify(d) + '\n\n'); } catch (e) {} };
+      if (b.type === 'state') {
+        const s = JSON.stringify(b.data === undefined ? null : b.data); if (s.length > 8000) { res.writeHead(413, CORSH); return res.end('big'); }
+        room.state = b.data === undefined ? null : b.data; room.clients.forEach(c => { if (c.id !== me.id) send(c.res, 'state', { from: me.id, data: room.state }); });
+      } else {
+        const s = JSON.stringify(b.data === undefined ? null : b.data); if (s.length > 8000) { res.writeHead(413, CORSH); return res.end('big'); }
+        if (b.to) { const t = room.clients.get(String(b.to)); if (t) send(t.res, 'msg', { from: me.id, data: b.data }); }
+        else room.clients.forEach(c => { if (c.id !== me.id) send(c.res, 'msg', { from: me.id, data: b.data }); });
+      }
+      res.writeHead(204, CORSH); res.end();
+    }).catch(() => { try { res.writeHead(413, CORSH); res.end(); } catch (e) {} });
+    return true;
+  }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url || '/', 'http://x'), url = u.pathname, ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   const authed = () => !PASSWORD || req.headers['x-app-password'] === PASSWORD;
   try {
+    const hostH = String(req.headers.host || '').split(':')[0].toLowerCase();
+    if (!isMainHost(hostH) && !url.startsWith('/api/')) { const ds = await domainSlug(hostH); if (ds) url = '/' + ds + (url === '' ? '/' : url); }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url === '/' || url === '/index.html')) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       return req.method === 'HEAD' ? res.end() : fs.createReadStream(INDEX).pipe(res);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
-    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
+    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, mail: !!RESEND_KEY, mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
+    if (url.startsWith('/api/rt/') && roomRoute(req, res, u)) return;
+    if (req.method === 'GET' && url === '/api/mp.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' }); return res.end(mpLib(String(u.searchParams.get('scope') || 'preview').replace(/[^a-z0-9-]/g, '').slice(0, 60) || 'preview')); }
     const site = SITE_RE.exec(url);
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
+    let am;
+    if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains')) {
+      if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
+      if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
+      const M = req.method;
+      if (url === '/api/me') { if (M === 'GET') return await meGet(req, res); if (M === 'PUT') return await mePut(req, res); }
+      if (url === '/api/me/email' && M === 'DELETE') return await emailUnlink(req, res);
+      if (url === '/api/auth/email/start' && M === 'POST') return await emailStart(req, res, ip);
+      if (url === '/api/auth/email/verify' && M === 'POST') return await emailVerify(req, res);
+      if (url === '/api/repos' && M === 'GET') return await repoList(req, res, u);
+      if ((am = url.match(/^\/api\/repos\/([a-z0-9]{1,24})$/)) && M === 'PUT') return await repoPut(req, res, am[1]);
+      if ((am = url.match(/^\/api\/repos\/([a-z0-9]{1,24})$/)) && M === 'DELETE') return await repoDelete(req, res, am[1]);
+      if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})$/)) && M === 'GET') return await repoGet(req, res, am[1]);
+      if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
+      if (url === '/api/feed' && M === 'GET') return await feedList(req, res);
+      if (url === '/api/feed' && M === 'POST') return await feedPost(req, res, ip);
+      if ((am = url.match(/^\/api\/feed\/([a-f0-9]{12})(\/like)?$/))) { if (M === 'POST' && am[2]) return await feedLike(req, res, am[1]); if (M === 'DELETE' && !am[2]) return await feedDelete(req, res, am[1]); }
+      if ((am = url.match(/^\/api\/users\/([^/]{1,60})$/)) && M === 'GET') return await userGet(req, res, decodeURIComponent(am[1]));
+      if (url === '/api/domains' && M === 'POST') return await domainAdd(req, res);
+      if ((am = url.match(/^\/api\/domains\/([a-z0-9.-]{4,253})(\/check)?$/))) { if (M === 'DELETE' && !am[2]) return await domainRemove(req, res, am[1]); if (M === 'GET' && am[2]) return await domainCheck(req, res, am[1]); }
+    }
     if (req.method === 'POST' && url === '/api/generate') {
       if (!KEY) return json(res, 503, { error: 'На сервері не задано GEMINI_API_KEY' });
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });

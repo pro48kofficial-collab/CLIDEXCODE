@@ -16,6 +16,7 @@ const zlib = require('zlib');
 const PORT = process.env.PORT || 3000;
 const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';          // змініть на Render, якщо потрібна інша модель
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash-lite';   // запасна модель, якщо основна перевантажена
 const API_BASE = (process.env.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 const PASSWORD = process.env.APP_PASSWORD || '';            // необов'язково: пароль на ШІ
 const HOURLY_LIMIT = parseInt(process.env.AI_HOURLY_LIMIT || '8', 10); // запитів на годину з однієї адреси
@@ -317,16 +318,23 @@ async function generate(req, res) {
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   try {
-    const url = API_BASE + '/models/' + encodeURIComponent(MODEL) + ':streamGenerateContent?alt=sse';
-    const r = await fetch(url, {
-      method: 'POST', signal: ac.signal,
-      headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: edit ? SYSTEM_EDIT : SYSTEM }] },
-        contents: [{ role: 'user', parts: [{ text: msg }] }],
-        generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
-      })
+    const reqBody = JSON.stringify({
+      systemInstruction: { parts: [{ text: edit ? SYSTEM_EDIT : SYSTEM }] },
+      contents: [{ role: 'user', parts: [{ text: msg }] }],
+      generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
     });
+    // Gemini часто повертає 503 «перевантажено»: пробуємо ще раз, а потім запасну модель
+    const tries = [MODEL, MODEL, FALLBACK_MODEL, FALLBACK_MODEL].filter((m, i, arr) => m && (i < 2 || m !== MODEL || i === 2));
+    let r;
+    for (let i = 0; i < tries.length; i++) {
+      const url = API_BASE + '/models/' + encodeURIComponent(tries[i]) + ':streamGenerateContent?alt=sse';
+      r = await fetch(url, { method: 'POST', signal: ac.signal, headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' }, body: reqBody });
+      if (r.ok || ![429, 500, 502, 503, 504].includes(r.status) || i === tries.length - 1) break;
+      console.error('Gemini', tries[i], r.status, '— повтор');
+      try { await r.arrayBuffer(); } catch (e) {}
+      send({ t: 'status', message: 'Gemini перевантажений, пробуємо ще раз…' });
+      await new Promise(ok => setTimeout(ok, 1500 * (i + 1)));
+    }
     if (!r.ok) {
       let detail = ''; try { detail = (await r.json()).error.message || ''; } catch (e) {}
       console.error('Gemini API', r.status, detail);
@@ -334,7 +342,7 @@ async function generate(req, res) {
         : r.status === 403 ? 'Ключ Gemini не має доступу (перевірте ключ і регіон)'
         : r.status === 404 ? 'Модель «' + MODEL + '» не знайдено — перевірте змінну GEMINI_MODEL'
         : r.status === 429 ? 'Перевищено ліміт запитів Gemini, спробуйте за хвилину'
-        : r.status >= 500 ? 'Сервіс Gemini тимчасово недоступний'
+        : r.status >= 500 ? 'Сервіс Gemini перевантажений (помилка на боці Google). Спробуйте ще раз за хвилину'
         : 'Помилка сервісу Gemini (' + r.status + ')';
       send({ t: 'error', message: human }); return res.end();
     }
@@ -589,6 +597,72 @@ async function emailUnlink(req, res) {
   const a = await acct(req, res, true); if (!a) return;
   if (a.p.email) { await kvDel('e:' + emailKey(a.p.email)); a.p.email = ''; await jset('u:' + a.uid, a.p); whoCache.delete(a.uid); }
   return json(res, 200, { ok: true });
+}
+
+/* вхід через обліковий запис Google / GitHub (OAuth) */
+const OAUTH = {
+  google: { id: process.env.GOOGLE_CLIENT_ID || '', secret: process.env.GOOGLE_CLIENT_SECRET || '', auth: 'https://accounts.google.com/o/oauth2/v2/auth', token: process.env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token', scope: 'openid email profile' },
+  github: { id: process.env.GITHUB_CLIENT_ID || '', secret: process.env.GITHUB_CLIENT_SECRET || '', auth: 'https://github.com/login/oauth/authorize', token: 'https://github.com/login/oauth/access_token', scope: 'read:user user:email' }
+};
+const OAUTH_ON = () => ({ google: !!(OAUTH.google.id && OAUTH.google.secret), github: !!(OAUTH.github.id && OAUTH.github.secret) });
+const baseUrl = req => (process.env.PUBLIC_URL || (PUBLIC_HOST ? 'https://' + PUBLIC_HOST : (String(req.headers['x-forwarded-proto'] || 'http').split(',')[0] + '://' + req.headers.host))).replace(/\/+$/, '');
+async function oauthBegin(req, res, ip) {
+  const b = await body(req, res); if (!b) return;
+  const prov = String(b.provider || ''), P = OAUTH[prov];
+  if (!P || !OAUTH_ON()[prov]) return json(res, 503, { error: 'Вхід через ' + (prov === 'github' ? 'GitHub' : 'Google') + ' не налаштований на сервері' });
+  if (limited(ip, 'oauth', 30)) return json(res, 429, { error: 'Забагато спроб. Спробуйте пізніше.' });
+  const mode = b.mode === 'link' ? 'link' : 'login'; let uid = '', code = '';
+  if (mode === 'link') { uid = syncUid(req); if (!uid || !(await jget('u:' + uid))) return json(res, 401, { error: 'Спочатку створіть профіль' }); code = req.headers['x-sync-code']; }
+  const st = crypto.randomBytes(18).toString('base64url');
+  await jset('os:' + st, { prov, mode, uid, code, exp: Date.now() + 600000 });
+  const q = new URLSearchParams({ client_id: P.id, redirect_uri: baseUrl(req) + '/api/auth/oauth/callback/' + prov, response_type: 'code', scope: P.scope, state: st });
+  if (prov === 'google') q.set('prompt', 'select_account');
+  return json(res, 200, { url: P.auth + '?' + q });
+}
+async function oauthIdentity(prov, code, redirect) {
+  const P = OAUTH[prov];
+  const form = new URLSearchParams({ client_id: P.id, client_secret: P.secret, code, redirect_uri: redirect, grant_type: 'authorization_code' });
+  const tr = await fetch(P.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form });
+  const tj = await tr.json().catch(() => ({})); if (!tj.access_token) throw new Error('Провайдер не видав токен');
+  const H = { authorization: 'Bearer ' + tj.access_token, accept: 'application/json', 'user-agent': 'clidex-editor' };
+  if (prov === 'google') {
+    const u = await (await fetch(process.env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo', { headers: H })).json();
+    if (!u.sub) throw new Error('Не вдалося отримати профіль Google');
+    return { id: String(u.sub), email: u.email_verified ? String(u.email || '').toLowerCase() : '', name: u.name || '' };
+  }
+  const u = await (await fetch('https://api.github.com/user', { headers: H })).json();
+  if (!u.id) throw new Error('Не вдалося отримати профіль GitHub');
+  let email = ''; try { const em = await (await fetch('https://api.github.com/user/emails', { headers: H })).json(); const e = Array.isArray(em) && (em.find(x => x.primary && x.verified) || em.find(x => x.verified)); if (e) email = String(e.email).toLowerCase(); } catch (e) {}
+  return { id: String(u.id), email, name: u.name || u.login || '' };
+}
+async function oauthCallback(req, res, prov, url) {
+  const back = (frag) => { res.writeHead(302, { Location: '/#' + frag, 'Cache-Control': 'no-store' }); res.end(); };
+  const q = new URL(req.url, 'http://x').searchParams, stn = q.get('state') || '';
+  const st = stn ? await jget('os:' + stn) : null; if (stn) await kvDel('os:' + stn);
+  if (!st || st.prov !== prov || st.exp < Date.now() || !q.get('code')) return back('oautherr=' + encodeURIComponent('Вхід скасовано або прострочений. Спробуйте ще раз.'));
+  try {
+    const idn = await oauthIdentity(prov, q.get('code'), baseUrl(req) + '/api/auth/oauth/callback/' + prov), ok = 'o:' + prov + ':' + idn.id;
+    const idx = await jget(ok);
+    if (st.mode === 'link') {
+      if (idx && idx.uid !== st.uid) return back('oautherr=' + encodeURIComponent('Цей обліковий запис уже прив’язаний до іншого профілю'));
+      await jset(ok, { uid: st.uid, code: st.code });
+      const p = await jget('u:' + st.uid); if (p) { p.oa = Object.assign({}, p.oa, { [prov]: idn.name || true }); await jset('u:' + st.uid, p); whoCache.delete(st.uid); }
+      return back('oauthok=' + prov);
+    }
+    let code = idx && idx.code, isNew = false;
+    if (!code && idn.email) { const e = await jget('e:' + emailKey(idn.email)); if (e && e.code) { code = e.code; await jset(ok, { uid: sha('clidex-sync:' + code), code }); } }
+    if (!code) { code = crypto.randomBytes(24).toString('base64url'); isNew = true; await jset(ok, { uid: sha('clidex-sync:' + code), code }); }
+    const tk = crypto.randomBytes(18).toString('base64url');
+    await jset('ot:' + tk, { code, exp: Date.now() + 120000, isNew, name: idn.name });
+    return back('oauth=' + tk);
+  } catch (e) { console.error('oauth', prov, e.message); return back('oautherr=' + encodeURIComponent('Не вдалося увійти: ' + e.message)); }
+}
+async function oauthTicket(req, res) {
+  const b = await body(req, res); if (!b) return;
+  const k = String(b.ticket || ''); if (!/^[A-Za-z0-9_-]{10,40}$/.test(k)) return json(res, 400, { error: 'Невірний квиток входу' });
+  const t = await jget('ot:' + k); await kvDel('ot:' + k);
+  if (!t || t.exp < Date.now()) return json(res, 400, { error: 'Квиток входу прострочений. Спробуйте ще раз.' });
+  return json(res, 200, { ok: true, code: t.code, isNew: !!t.isNew, name: t.name || '' });
 }
 
 /* репозиторії */
@@ -1266,7 +1340,7 @@ const server = http.createServer(async (req, res) => {
       return req.method === 'HEAD' ? res.end() : res.end(gz ? idxCache.gz : idxCache.raw);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
-    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
+    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, oauth: OAUTH_ON(), mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
     if (pwaRoute(req, res, url)) return;
     if (url.startsWith('/api/rt/') && roomRoute(req, res, u)) return;
     let lm;
@@ -1284,6 +1358,9 @@ const server = http.createServer(async (req, res) => {
       const M = req.method;
       if (url === '/api/me') { if (M === 'GET') return await meGet(req, res); if (M === 'PUT') return await mePut(req, res); }
       if (url === '/api/me/email' && M === 'DELETE') return await emailUnlink(req, res);
+      if (url === '/api/auth/oauth/begin' && M === 'POST') return await oauthBegin(req, res, ip);
+      if (url === '/api/auth/oauth/ticket' && M === 'POST') return await oauthTicket(req, res);
+      { const om = url.split('?')[0].match(/^\/api\/auth\/oauth\/callback\/(google|github)$/); if (om && M === 'GET') return await oauthCallback(req, res, om[1], url); }
       if (url === '/api/auth/email/start' && M === 'POST') return await emailStart(req, res, ip);
       if (url === '/api/auth/email/verify' && M === 'POST') return await emailVerify(req, res);
       if (url === '/api/repos' && M === 'GET') return await repoList(req, res, u);

@@ -20,7 +20,7 @@ const API_BASE = (process.env.GEMINI_API_URL || 'https://generativelanguage.goog
 const PASSWORD = process.env.APP_PASSWORD || '';            // необов'язково: пароль на ШІ
 const HOURLY_LIMIT = parseInt(process.env.AI_HOURLY_LIMIT || '8', 10); // запитів на годину з однієї адреси
 const MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || '32000', 10);
-const INDEX = path.join(__dirname, 'index.html');
+const INDEX = path.join(__dirname, 'index.html'); let idxCache = null;
 const PREFIX = /^[a-z0-9-]{1,30}$/.test(process.env.SITE_PREFIX || '') ? process.env.SITE_PREFIX : 'clidex-code-';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UP_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
@@ -1259,8 +1259,11 @@ const server = http.createServer(async (req, res) => {
     const hostH = String(req.headers.host || '').split(':')[0].toLowerCase();
     if (!isMainHost(hostH) && !url.startsWith('/api/')) { const ds = await domainSlug(hostH); if (ds) url = '/' + ds + (url === '' ? '/' : url); }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url === '/' || url === '/index.html')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      return req.method === 'HEAD' ? res.end() : fs.createReadStream(INDEX).pipe(res);
+      const st = fs.statSync(INDEX);
+      if (!idxCache || idxCache.m !== st.mtimeMs) { const raw = fs.readFileSync(INDEX); idxCache = { m: st.mtimeMs, raw, gz: zlib.gzipSync(raw, { level: 9 }) }; }
+      const gz = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+      res.writeHead(200, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding' }, gz ? { 'Content-Encoding': 'gzip' } : {}));
+      return req.method === 'HEAD' ? res.end() : res.end(gz ? idxCache.gz : idxCache.raw);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
     if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });

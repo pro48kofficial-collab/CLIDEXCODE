@@ -323,17 +323,23 @@ async function generate(req, res) {
       contents: [{ role: 'user', parts: [{ text: msg }] }],
       generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
     });
-    // Gemini часто повертає 503 «перевантажено»: пробуємо ще раз, а потім запасну модель
-    const tries = [MODEL, MODEL, FALLBACK_MODEL, FALLBACK_MODEL].filter((m, i, arr) => m && (i < 2 || m !== MODEL || i === 2));
+    // Gemini часто повертає 503 «перевантажено»: пробуємо ще раз; якщо моделі не існує (404) або вона перевантажена — переходимо на запасну
+    const models = [MODEL, FALLBACK_MODEL, 'gemini-2.5-flash'].filter((m, i, a) => m && a.indexOf(m) === i);
     let r;
-    for (let i = 0; i < tries.length; i++) {
-      const url = API_BASE + '/models/' + encodeURIComponent(tries[i]) + ':streamGenerateContent?alt=sse';
-      r = await fetch(url, { method: 'POST', signal: ac.signal, headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' }, body: reqBody });
-      if (r.ok || ![429, 500, 502, 503, 504].includes(r.status) || i === tries.length - 1) break;
-      console.error('Gemini', tries[i], r.status, '— повтор');
-      try { await r.arrayBuffer(); } catch (e) {}
-      send({ t: 'status', message: 'Gemini перевантажений, пробуємо ще раз…' });
-      await new Promise(ok => setTimeout(ok, 1500 * (i + 1)));
+    outer: for (let mi = 0; mi < models.length; mi++) {
+      for (let at = 0; at < 2; at++) {
+        const url = API_BASE + '/models/' + encodeURIComponent(models[mi]) + ':streamGenerateContent?alt=sse';
+        r = await fetch(url, { method: 'POST', signal: ac.signal, headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' }, body: reqBody });
+        if (r.ok) break outer;
+        const last = mi === models.length - 1;
+        if (r.status === 404 && !last) { console.error('Gemini: модель', models[mi], 'не знайдена — беремо', models[mi + 1]); try { await r.arrayBuffer(); } catch (e) {} break; }
+        if (![429, 500, 502, 503, 504].includes(r.status)) break outer;
+        if (at === 1 && last) break outer;
+        console.error('Gemini', models[mi], r.status, '— повтор');
+        try { await r.arrayBuffer(); } catch (e) {}
+        send({ t: 'status', message: 'Gemini перевантажений, пробуємо ще раз…' });
+        await new Promise(ok => setTimeout(ok, 1500 * (at + 1)));
+      }
     }
     if (!r.ok) {
       let detail = ''; try { detail = (await r.json()).error.message || ''; } catch (e) {}

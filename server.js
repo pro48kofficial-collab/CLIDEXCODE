@@ -254,6 +254,23 @@ function limited(ip, bucket, limit) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some(t => now - t < 3600e3)) hits.delete(k); }, 600e3).unref();
 
+/* захист від флуду / DDoS на рівні застосунку (не замінює Cloudflare, але відсікає прості атаки) */
+const clientIp = req => {
+  const cf = req.headers['cf-connecting-ip']; if (typeof cf === 'string' && cf) return cf.trim();
+  const xf = String(req.headers['x-forwarded-for'] || '').split(',').map(x => x.trim()).filter(Boolean);
+  return xf.length ? xf[xf.length - 1] : (req.socket.remoteAddress || '');
+};
+const FLOOD_N = +process.env.FLOOD_LIMIT || 300, FLOOD_WIN = 10000, FLOOD_BAN = 120000;
+const flood = new Map(), bans429 = new Map();
+function floodCheck(ip, url) {
+  if (url === '/healthz') return 0;
+  const now = Date.now(), b = bans429.get(ip); if (b && b > now) return Math.ceil((b - now) / 1000);
+  let f = flood.get(ip); if (!f || now - f.t > FLOOD_WIN) { f = { t: now, n: 0 }; flood.set(ip, f); }
+  if (++f.n > FLOOD_N) { bans429.set(ip, now + FLOOD_BAN); console.error('флуд: тимчасово заблоковано', ip); return Math.ceil(FLOOD_BAN / 1000); }
+  return 0;
+}
+setInterval(() => { const now = Date.now(); for (const [k, v] of flood) if (now - v.t > FLOOD_WIN) flood.delete(k); for (const [k, v] of bans429) if (v < now) bans429.delete(k); }, 30000).unref();
+
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
     let n = 0; const chunks = [];
@@ -1333,7 +1350,12 @@ function roomRoute(req, res, u) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = clientIp(req);
+  { // захист від перевантаження: короткий ліміт запитів з однієї адреси + тимчасовий бан
+    const fl = floodCheck(ip, url);
+    if (fl) { res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(fl), 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: 'Забагато запитів. Зачекайте хвилину й спробуйте ще раз.' })); }
+    res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  }
   const authed = () => !PASSWORD || req.headers['x-app-password'] === PASSWORD;
   try {
     const hostH = String(req.headers.host || '').split(':')[0].toLowerCase();
@@ -1431,5 +1453,5 @@ const server = http.createServer(async (req, res) => {
 });
 process.on('unhandledRejection', e => console.error('unhandledRejection:', e));
 process.on('uncaughtException', e => console.error('uncaughtException:', e));
-server.requestTimeout = 0; server.headersTimeout = 30000; server.keepAliveTimeout = 65000;
+server.requestTimeout = 0; server.headersTimeout = 30000; server.maxConnections = 2000; server.maxHeadersCount = 60; server.keepAliveTimeout = 65000;
 server.listen(PORT, () => console.log('Clidex Editor на порту ' + PORT + (KEY ? ' · ШІ увімкнено (' + MODEL + ')' : ' · ШІ вимкнено: немає GEMINI_API_KEY') + ' · сховище: ' + B.kind + (B.durable ? '' : ' (тимчасове! задайте DATABASE_URL (PostgreSQL))')));

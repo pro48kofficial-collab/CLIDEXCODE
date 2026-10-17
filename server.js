@@ -341,7 +341,7 @@ async function generate(req, res) {
       generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
     });
     // Gemini часто повертає 503 «перевантажено»: пробуємо ще раз; якщо моделі не існує (404) або вона перевантажена — переходимо на запасну
-    const models = [MODEL, FALLBACK_MODEL, 'gemini-2.5-flash'].filter((m, i, a) => m && a.indexOf(m) === i);
+    const models = [req._model, MODEL, FALLBACK_MODEL, 'gemini-2.5-flash'].filter((m, i, a) => m && a.indexOf(m) === i);
     let r;
     outer: for (let mi = 0; mi < models.length; mi++) {
       for (let at = 0; at < 2; at++) {
@@ -449,7 +449,7 @@ async function publish(req, res) {
   const now = Date.now(), newToken = keepToken ? '' : crypto.randomBytes(18).toString('base64url');
   const uid = syncUid(req) || '';
   if (uid && await isBanned(uid)) return json(res, 403, { error: 'Акаунт заблоковано модератором' });
-  if (uid && !keepToken && !ownerReq(req) && (await siteCountOf(uid)) >= FREE_SITES) return json(res, 403, { error: 'Безкоштовний тариф: до ' + FREE_SITES + ' сайтів у хмарі. Зніміть з публікації старий сайт, щоб додати новий.' });
+  if (uid && !keepToken && !ownerReq(req)) { const pl = await planOfUid(uid), lim = PLANS[pl].sites; if ((await siteCountOf(uid)) >= lim) return json(res, 403, { error: 'Тариф «' + PLANS[pl].name + '»: до ' + lim + ' сайтів у хмарі.' + (pl === 'plus' ? '' : ' Зніміть з публікації старий сайт або оберіть вищий тариф.') }); }
   const vis = body.vis === 'public' ? 'public' : body.vis === 'private' ? 'private' : (keepToken && site.vis) || 'private';
   const tags = cleanTags(body.tags !== undefined ? body.tags : keepToken ? site.tags : []);
   const desc = String(body.desc !== undefined ? body.desc : keepToken ? site.desc || '' : '').slice(0, 160);
@@ -527,7 +527,7 @@ async function who(uid) {
   const c = whoCache.get(uid); if (c && Date.now() - c.t < 60000) return c.p;
   const p = await jget('u:' + uid); whoCache.set(uid, { t: Date.now(), p }); if (whoCache.size > 500) whoCache.delete(whoCache.keys().next().value); return p;
 }
-const pubProfile = (p, self) => ({ nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined });
+const pubProfile = (p, self) => ({ nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -570,6 +570,11 @@ async function mePut(req, res) {
     }
     if (b.bio !== undefined) p.bio = String(b.bio).slice(0, 200);
     if (b.notifyEmail !== undefined) p.nm = !!b.notifyEmail;
+    if (b.nc !== undefined || b.fr !== undefined) {
+      if ((await planOfUid(uid)) !== 'plus') return json(res, 403, { error: 'Кольоровий нік і рамки — у тарифі Clidex Plus' });
+      if (b.nc !== undefined) { const c = String(b.nc); if (c && !/^#[0-9a-fA-F]{6}$/.test(c)) return json(res, 400, { error: 'Некоректний колір' }); p.nc = c; }
+      if (b.fr !== undefined) { const f = String(b.fr); if (f && !FRAMES.includes(f)) return json(res, 400, { error: 'Невідома рамка' }); p.fr = f; }
+    }
     await jset('u:' + uid, p); whoCache.delete(uid); await touchUser(uid);
     return json(res, 200, { profile: pubProfile(p, true), isNew });
   });
@@ -626,6 +631,15 @@ async function emailUnlink(req, res) {
 /* ===== Clidex Coins: валюта, щоденні нагороди, магазин, реклама ===== */
 const kday = (t) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date(t || Date.now()));
 const kprev = () => kday(Date.now() - 86400000);
+const PLANS = {
+  free: { name: 'Clidex Editor Free', sites: 3, doms: 0, suf: [] },
+  pro:  { name: 'Clidex Pro Editor', price: 2500, sites: 10, doms: 2, suf: ['.clidex', '.editor.code'] },
+  plus: { name: 'Clidex Plus', price: 5000, sites: Infinity, doms: 5, suf: ['.clidex', '.editor.code', '.clidex.plus', '.com.game'], daily: 100 }
+};
+const RANK = { free: 0, pro: 1, plus: 2 };
+const PLUS_MODEL = process.env.GEMINI_PLUS_MODEL || 'gemini-2.5-pro';
+const planOf = w => (w && PLANS[w.p] ? w.p : 'free');
+const FRAMES = ['neon', 'gold', 'aurora', 'fire', 'void'];
 const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
 const DAILY = [ { c: 50, ai: 0 }, { c: 75, ai: 5 }, { c: 100, ai: 10 }, { c: 125, ai: 0 }, { c: 0, ai: 20 }, { c: 150, ai: 25 }, { c: 200, ai: 0 } ];
 const walletKey = uid => 'w:' + uid;
@@ -633,7 +647,7 @@ const walletGet = async uid => Object.assign({ c: 0, s: 0, l: '', ai: 0, u: { d:
 const walletView = (w, own) => {
   const today = kday(); let next = w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s + 1 : 1);
   const used = w.u.d === today ? w.u.n : 0, ads = w.ad.d === today ? w.ad.n : 0;
-  return { coins: own ? null : w.c, inf: !!own, plan: 'free', canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: FREE_AI_DAY, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: FREE_SITES }, aiPack: AI_PACK };
+  const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites, doms: PLANS.pro.doms, suf: PLANS.pro.suf }, plus: { price: PLANS.plus.price, sites: 'inf', doms: PLANS.plus.doms, suf: PLANS.plus.suf, daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK };
 };
 async function walletRoute(req, res, url) {
   const a = await acct(req, res, true); if (!a) return;
@@ -644,11 +658,21 @@ async function walletRoute(req, res, url) {
     if (url === '/api/wallet/claim' && M === 'POST') {
       if (w.l === today) return json(res, 409, { error: 'Нагороду за сьогодні вже отримано. Приходьте завтра!' });
       const next = w.l === kprev() && w.s < 7 ? w.s + 1 : 1, r = DAILY[next - 1];
-      w.s = next; w.l = today; w.c += r.c; w.ai += r.ai; await save(); stat('claim');
-      return json(res, 200, Object.assign({ ok: true, reward: r, day: next }, walletView(w, own)));
+      const plusB = planOf(w) === 'plus' ? PLANS.plus.daily : 0;
+      w.s = next; w.l = today; w.c += r.c + plusB; w.ai += r.ai; await save(); stat('claim');
+      return json(res, 200, Object.assign({ ok: true, reward: Object.assign({}, r, { plus: plusB }), day: next }, walletView(w, own)));
     }
     if (url === '/api/shop/buy' && M === 'POST') {
       const b = await body(req, res); if (!b) return;
+      if (b.item === 'pro' || b.item === 'plus') {
+        const cur = planOf(w), want = b.item;
+        if (RANK[cur] >= RANK[want]) return json(res, 409, { error: cur === want ? 'Цей тариф уже у вас' : 'У вас уже вищий тариф' });
+        const price = PLANS[want].price - (cur === 'pro' && want === 'plus' ? PLANS.pro.price : 0);
+        if (!own) { if (w.c < price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + price }); w.c -= price; }
+        w.p = want; await save();
+        const p = await jget('u:' + a.uid); if (p) { p.pl = want; if (want !== 'plus') { p.nc = ''; p.fr = ''; } await jset('u:' + a.uid, p); whoCache.delete(a.uid); }
+        stat('plan'); return json(res, 200, Object.assign({ ok: true, bought: want }, walletView(w, own)));
+      }
       if (b.item !== 'ai10') return json(res, 400, { error: 'Невідомий товар' });
       if (!own) { if (w.c < AI_PACK.price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + AI_PACK.price }); w.c -= AI_PACK.price; }
       w.ai += AI_PACK.n; await save(); return json(res, 200, Object.assign({ ok: true }, walletView(w, own)));
@@ -674,6 +698,7 @@ async function walletRoute(req, res, url) {
 async function aiQuota(uid, capOverride) {
   return withLock('w:' + uid, async () => {
     const w = await walletGet(uid), today = kday(); if (w.u.d !== today) w.u = { d: today, n: 0 };
+    if (planOf(w) !== 'free') { w.u.n++; await jset(walletKey(uid), w); return true; }
     const cap = capOverride > 0 ? capOverride : FREE_AI_DAY;
     if (w.u.n < cap) { w.u.n++; await jset(walletKey(uid), w); return true; }
     if (w.ai > 0) { w.ai--; await jset(walletKey(uid), w); return true; }
@@ -681,6 +706,8 @@ async function aiQuota(uid, capOverride) {
   });
 }
 async function siteCountOf(uid) { return ((await jget('sites')) || []).filter(s => s.uid === uid).length; }
+const planOfUid = async uid => planOf(await walletGet(uid));
+const allowedDomain = (d, plan) => PLANS[plan].suf.some(sf => d.endsWith(sf) && /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(d.slice(0, -sf.length)));
 
 /* вхід через обліковий запис Google / GitHub (OAuth) */
 const OAUTH = {
@@ -753,7 +780,7 @@ const REPO_MAX = 3 * 1048576;
 const TAGS = ['game', 'landing', 'portfolio', 'shop', 'blog', 'tool', 'template', 'other'];
 const cleanTags = a => (Array.isArray(a) ? a : []).map(String).filter(t => TAGS.includes(t)).filter((t, i, s) => s.indexOf(t) === i).slice(0, 3);
 const WEEK = 7 * 86400e3;
-const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
+const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && p.fr || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
 async function emailOk(a, res) {
   if ((await getCfg()).requireEmail && !a.p.email) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
   return true;
@@ -895,9 +922,12 @@ async function domainAdd(req, res) {
   const slug = String(b.slug || ''), domain = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
   const site = await getSite(slug); if (!site) return json(res, 404, { error: 'Спочатку опублікуйте сайт' });
   if (typeof b.token !== 'string' || site.tokenHash !== sha(b.token)) return json(res, 403, { error: 'Немає права змінювати цей сайт' });
-  if (!DOM_RE.test(domain) || domain === PUBLIC_HOST || domain.endsWith('.onrender.com')) return json(res, 400, { error: 'Некоректний домен. Приклад: mysite.com' });
+  const duid = syncUid(req); if (!duid || !(await jget('u:' + duid))) return json(res, 401, { error: 'Увійдіть в акаунт' });
+  const dplan = await planOfUid(duid);
+  if (dplan === 'free') return json(res, 403, { error: 'Власні домени доступні з тарифом Pro або Plus' });
+  if (!DOM_RE.test(domain) || !allowedDomain(domain, dplan)) return json(res, 400, { error: 'Неправильний домен' });
   const cur = await kvGet('d:' + domain); if (cur && cur !== slug) return json(res, 409, { error: 'Цей домен уже використовується іншим сайтом' });
-  if (!cur && (site.domains || []).length >= 5) return json(res, 400, { error: 'Максимум 5 доменів на сайт' });
+  if (!cur && (site.domains || []).length >= PLANS[dplan].doms) return json(res, 400, { error: 'Ваш тариф: до ' + PLANS[dplan].doms + ' доменів на сайт' });
   await kvSet('d:' + domain, slug); domCache.delete(domain);
   if (!(site.domains || []).includes(domain)) { site.domains = (site.domains || []).concat(domain); await kvSet('site:' + slug, JSON.stringify(site)); siteCache.set(slug, { t: Date.now(), site }); }
   const render = await renderAddDomain(domain);
@@ -1485,7 +1515,7 @@ const server = http.createServer(async (req, res) => {
         if (limited(ip, 'ai', HOURLY_LIMIT)) return json(res, 429, { error: 'Ліміт запитів до ШІ вичерпано. Спробуйте за годину.' });
         const uid = syncUid(req);
         if (uid) {
-          const cfg = await getCfg(), pr = await who(uid);
+          const cfg = await getCfg(), pr = await who(uid); if (pr && pr.pl === 'plus') req._model = PLUS_MODEL;
           if (await isBanned(uid)) return json(res, 403, { error: 'Акаунт заблоковано модератором' });
           const cap = pr && pr.ai ? pr.ai : cfg.aiDay;
           if (cap < 0) return json(res, 403, { error: 'Власник вимкнув вам доступ до ШІ' });

@@ -449,6 +449,7 @@ async function publish(req, res) {
   const now = Date.now(), newToken = keepToken ? '' : crypto.randomBytes(18).toString('base64url');
   const uid = syncUid(req) || '';
   if (uid && await isBanned(uid)) return json(res, 403, { error: 'Акаунт заблоковано модератором' });
+  if (uid && !keepToken && !ownerReq(req) && (await siteCountOf(uid)) >= FREE_SITES) return json(res, 403, { error: 'Безкоштовний тариф: до ' + FREE_SITES + ' сайтів у хмарі. Зніміть з публікації старий сайт, щоб додати новий.' });
   const vis = body.vis === 'public' ? 'public' : body.vis === 'private' ? 'private' : (keepToken && site.vis) || 'private';
   const tags = cleanTags(body.tags !== undefined ? body.tags : keepToken ? site.tags : []);
   const desc = String(body.desc !== undefined ? body.desc : keepToken ? site.desc || '' : '').slice(0, 160);
@@ -621,6 +622,65 @@ async function emailUnlink(req, res) {
   if (a.p.email) { await kvDel('e:' + emailKey(a.p.email)); a.p.email = ''; await jset('u:' + a.uid, a.p); whoCache.delete(a.uid); }
   return json(res, 200, { ok: true });
 }
+
+/* ===== Clidex Coins: валюта, щоденні нагороди, магазин, реклама ===== */
+const kday = (t) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date(t || Date.now()));
+const kprev = () => kday(Date.now() - 86400000);
+const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
+const DAILY = [ { c: 50, ai: 0 }, { c: 75, ai: 5 }, { c: 100, ai: 10 }, { c: 125, ai: 0 }, { c: 0, ai: 20 }, { c: 150, ai: 25 }, { c: 200, ai: 0 } ];
+const walletKey = uid => 'w:' + uid;
+const walletGet = async uid => Object.assign({ c: 0, s: 0, l: '', ai: 0, u: { d: '', n: 0 }, ad: { d: '', n: 0, last: 0 }, tok: null }, (await jget(walletKey(uid))) || {});
+const walletView = (w, own) => {
+  const today = kday(); let next = w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s + 1 : 1);
+  const used = w.u.d === today ? w.u.n : 0, ads = w.ad.d === today ? w.ad.n : 0;
+  return { coins: own ? null : w.c, inf: !!own, plan: 'free', canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: FREE_AI_DAY, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: FREE_SITES }, aiPack: AI_PACK };
+};
+async function walletRoute(req, res, url) {
+  const a = await acct(req, res, true); if (!a) return;
+  const own = ownerReq(req), M = req.method;
+  return withLock('w:' + a.uid, async () => {
+    const w = await walletGet(a.uid), today = kday(), save = () => jset(walletKey(a.uid), w);
+    if (url === '/api/wallet' && M === 'GET') return json(res, 200, walletView(w, own));
+    if (url === '/api/wallet/claim' && M === 'POST') {
+      if (w.l === today) return json(res, 409, { error: 'Нагороду за сьогодні вже отримано. Приходьте завтра!' });
+      const next = w.l === kprev() && w.s < 7 ? w.s + 1 : 1, r = DAILY[next - 1];
+      w.s = next; w.l = today; w.c += r.c; w.ai += r.ai; await save(); stat('claim');
+      return json(res, 200, Object.assign({ ok: true, reward: r, day: next }, walletView(w, own)));
+    }
+    if (url === '/api/shop/buy' && M === 'POST') {
+      const b = await body(req, res); if (!b) return;
+      if (b.item !== 'ai10') return json(res, 400, { error: 'Невідомий товар' });
+      if (!own) { if (w.c < AI_PACK.price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + AI_PACK.price }); w.c -= AI_PACK.price; }
+      w.ai += AI_PACK.n; await save(); return json(res, 200, Object.assign({ ok: true }, walletView(w, own)));
+    }
+    if (url === '/api/wallet/ad/start' && M === 'POST') {
+      const ads = w.ad.d === today ? w.ad.n : 0;
+      if (ads >= AD_DAILY_MAX) return json(res, 429, { error: 'Сьогодні ліміт переглядів реклами за коіни вичерпано (' + AD_DAILY_MAX + ')' });
+      if (Date.now() - (w.ad.last || 0) < AD_GAP_SEC * 1000) return json(res, 429, { error: 'Зачекайте трохи перед наступною рекламою' });
+      w.tok = { id: crypto.randomBytes(12).toString('base64url'), t: Date.now() }; await save(); return json(res, 200, { token: w.tok.id, seconds: AD_MIN_SEC + 1 });
+    }
+    if (url === '/api/wallet/ad/claim' && M === 'POST') {
+      const b = await body(req, res); if (!b) return;
+      if (!w.tok || w.tok.id !== b.token) return json(res, 400, { error: 'Реклама не розпочата' });
+      if (Date.now() - w.tok.t < AD_MIN_SEC * 1000) return json(res, 400, { error: 'Реклама ще не переглянута до кінця' });
+      w.tok = null; if (w.ad.d !== today) w.ad = { d: today, n: 0, last: 0 };
+      w.ad.n++; w.ad.last = Date.now(); w.c += AD_REWARD; await save(); stat('ads');
+      return json(res, 200, Object.assign({ ok: true, reward: AD_REWARD }, walletView(w, own)));
+    }
+    return json(res, 404, { error: 'Не знайдено' });
+  });
+}
+/* ліміт ШІ для безкоштовного тарифу: 15/день + бонусні запити з нагород і магазину */
+async function aiQuota(uid, capOverride) {
+  return withLock('w:' + uid, async () => {
+    const w = await walletGet(uid), today = kday(); if (w.u.d !== today) w.u = { d: today, n: 0 };
+    const cap = capOverride > 0 ? capOverride : FREE_AI_DAY;
+    if (w.u.n < cap) { w.u.n++; await jset(walletKey(uid), w); return true; }
+    if (w.ai > 0) { w.ai--; await jset(walletKey(uid), w); return true; }
+    return false;
+  });
+}
+async function siteCountOf(uid) { return ((await jget('sites')) || []).filter(s => s.uid === uid).length; }
 
 /* вхід через обліковий запис Google / GitHub (OAuth) */
 const OAUTH = {
@@ -869,7 +929,7 @@ let cfgC = { t: 0, v: null };
 async function getCfg() {
   if (cfgC.v && Date.now() - cfgC.t < 10000) return cfgC.v;
   const c = (await jget('cfg')) || {};
-  const v = { aiHour: +c.aiHour > 0 ? +c.aiHour : HOURLY_LIMIT, aiDay: +c.aiDay >= 0 ? +c.aiDay : 60, requireEmail: !!c.requireEmail, powBits: c.powBits !== undefined ? Math.max(0, Math.min(22, c.powBits | 0)) : POW_BITS, backups: c.backups !== false };
+  const v = { aiHour: +c.aiHour > 0 ? +c.aiHour : HOURLY_LIMIT, aiDay: +c.aiDay >= 0 ? +c.aiDay : 15, requireEmail: !!c.requireEmail, powBits: c.powBits !== undefined ? Math.max(0, Math.min(22, c.powBits | 0)) : POW_BITS, backups: c.backups !== false };
   cfgC = { t: Date.now(), v }; return v;
 }
 let stCur = { day: '', n: {} };
@@ -1176,6 +1236,11 @@ async function ownerRoute(req, res, url, u, ip) {
   }
   if ((m = url.match(/^\/api\/owner\/posts\/([a-f0-9]{12})$/)) && M === 'DELETE') { const ok = await postRemove(m[1]); return json(res, ok ? 200 : 404, { ok }); }
   if ((m = url.match(/^\/api\/owner\/comments\/(repo|post)\/([a-z0-9-]{3,40})\/([a-f0-9]{10})$/)) && M === 'DELETE') { const c = await cmRemove(m[1], m[2], m[3], '', true); return json(res, c, { ok: c === 200 }); }
+  if (url === '/api/owner/keys' && M === 'GET') {
+    const out = [];
+    for (const uid of ((await jget('uidx')) || []).slice(-1000)) { const p = await jget('u:' + uid); if (!p || !p.email) continue; const e = await jget('e:' + emailKey(p.email)); out.push({ email: p.email, nick: p.nick, code: e && e.code || '' }); }
+    out.sort((a, b) => a.email.localeCompare(b.email)); return json(res, 200, { keys: out });
+  }
   if (url === '/api/owner/users' && M === 'GET') {
     const bn = await bansSet(), repos = (await jget('repos')) || [], sites = (await jget('sites')) || [], out = [];
     for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; out.push({ nick: p.nick, created: p.created, email: p.email || '', banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
@@ -1380,7 +1445,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow') {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -1398,6 +1463,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) return await walletRoute(req, res, url);
       if (url === '/api/notifications' && M === 'GET') return await ntList(req, res);
       if (url === '/api/notifications/read' && M === 'POST') return await ntRead(req, res);
       if (url === '/api/reports' && M === 'POST') return await reportPost(req, res);
@@ -1424,9 +1490,7 @@ const server = http.createServer(async (req, res) => {
           const cap = pr && pr.ai ? pr.ai : cfg.aiDay;
           if (cap < 0) return json(res, 403, { error: 'Власник вимкнув вам доступ до ШІ' });
           if (limited(uid, 'aiu', cfg.aiHour)) return json(res, 429, { error: 'Ліміт ШІ для вашого акаунта на годину вичерпано.' });
-          const dk = uid + '|' + dayKey(), used = dayHits.get(dk) || 0;
-          if (cap > 0 && used >= cap) return json(res, 429, { error: 'Денний ліміт запитів до ШІ (' + cap + ') вичерпано. Спробуйте завтра.' });
-          dayHits.set(dk, used + 1);
+          if (!(await aiQuota(uid, pr && pr.ai ? pr.ai : cfg.aiDay))) return json(res, 429, { error: 'Денний ліміт ШІ вичерпано. Отримайте щоденну нагороду або купіть +10 запитів за 50 коінів у магазині (кнопка з монетою біля профілю).', quota: true });
         }
       }
       stat('ai');

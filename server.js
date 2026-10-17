@@ -227,6 +227,47 @@ NAME: <short site name, max 40 characters, in the user's language>
 <<<END>>>
 (and so on for each file)`;
 
+
+const SYSTEM_3D = `You are a senior game developer inside a mobile game builder. The user describes a 3D GAME. You write ONLY two files: scene.js and game.js. The files index.html and engine.js already exist and MUST NOT be written. The game runs in the browser with three.js r128 (global THREE) and a tiny helper library Clx3 (engine.js). The user can later edit the scene visually in a 3D editor, so ALL visible things that can be placed in the world MUST be defined as data in scene.js, and game.js must read them.
+
+scene.js format (valid JavaScript, exactly one global):
+var SCENE = { "game": "custom", "bg": "#0d1117", "fog": true, "ground": {"c": "#161b22"}, "cfg": {"speed": 0.15}, "objects": [ {"id":"o1","name":"Player","t":"box","c":"#58a6ff","x":0,"y":0.5,"z":0,"s":1,"ry":0,"role":"player","anim":{"type":"spin","speed":1,"amp":1}} ] };
+- t is one of: box, sphere, cylinder, cone, plane, torus. All primitives have size 1 and are centred on their origin (so y=0.5 sits on the ground). s is a uniform scale. ry is rotation around Y in degrees. c is a CSS hex colour.
+- role is any short word describing the game role, e.g. player, enemy, pickup, obstacle, wall, goal, decor. game.js finds objects by role.
+- anim.type: none, spin, bob, pulse, sway (visual only). Use sparingly for pickups/decor.
+- Give each role several objects with positions where it makes sense (e.g. 8-15 pickups, walls, enemies). Use "cfg" for tunable numbers (speed, spawn rate, ...). Do NOT use model/tex fields (the user adds models and textures later in the editor); if the user supplies them they replace the primitive automatically.
+
+engine API (already loaded before game.js, do not redefine):
+var ctx = Clx3.boot(SCENE);  // builds the scene from SCENE.objects, creates renderer, camera, lights, ground
+ctx.THREE, ctx.scene, ctx.cam (PerspectiveCamera, you position it), ctx.ren
+ctx.byRole  // {role: [THREE.Group,...]} the live objects created from SCENE.objects; each group has .userData.o (its definition)
+ctx.defs(role) // array of definitions (plain objects) for that role
+ctx.hideRole(role) // hide prototype objects you will clone
+ctx.make(def) // new THREE.Group from a definition (copy a def with Object.assign({}, def, {x:..,z:..}))
+ctx.add(group) / ctx.remove(group) // add to / remove from the scene (add registers it under its role and enables its animation)
+ctx.keys // object, lowercase key name -> true while pressed ("arrowleft", "w", " ")
+ctx.touch // {x, y, down}: pointer position normalised to -1..1, down = finger/mouse pressed
+ctx.run(function(dt, t){ ... }) // starts the render loop; dt = seconds since last frame, t = total seconds. Call exactly once at the end.
+Clx3.hud(text) // shows text top-left (score, lives)
+Clx3.say(html, onTap) // full-screen message; tapping hides it and calls onTap. Use it for the title screen ("tap to start") and for game over / win, then restart on tap.
+
+RULES
+- Work on touch phones AND keyboard: support ctx.keys and ctx.touch (e.g. left/right halves of the screen, virtual joystick via touch position).
+- Move objects by changing group.position; do not create your own renderer, scene or canvas; do not load external files; no libraries besides THREE and Clx3.
+- Write all visible texts (title, hints, game over) in the language of the user's description (Ukrainian if unsure).
+- Make a complete, fun, playable game loop: goal, challenge, score, game over or win, restart.
+- Collision: compare distances between group.position values.
+- The code must run without errors. Double-check that every role you read in game.js exists in scene.js.
+
+OUTPUT FORMAT (strict, no prose, no markdown fences, nothing before or after):
+NAME: <short game name, max 40 characters, in the user's language>
+<<<FILE: scene.js>>>
+...
+<<<END>>>
+<<<FILE: game.js>>>
+...
+<<<END>>>`;
+
 const SYSTEM_EDIT = `You are a senior front-end developer editing an EXISTING static website inside a mobile website builder.
 You receive the current project files and a change request. Make exactly the requested change with minimal collateral changes; keep the existing design, structure, file names and content that were not asked to change.
 
@@ -310,7 +351,8 @@ function userMessage(b) {
 async function generate(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req, 700 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
-  const edit = body.mode === 'edit';
+  const edit = body.mode === 'edit', k3 = body.kind === '3d' && !edit;
+  if (k3 && req._pl !== 'pro' && req._pl !== 'plus') return json(res, 403, { error: '3D-ігри від ШІ доступні з тарифом Pro або Plus' });
   const prompt = String(body.prompt || '').trim().slice(0, 4000);
   if (prompt.length < 5) return json(res, 400, { error: 'Опишіть сайт трохи детальніше' });
   const images = (Array.isArray(body.images) ? body.images : []).slice(0, 12)
@@ -328,7 +370,7 @@ async function generate(req, res) {
     }
     if (!parts.length) return json(res, 400, { error: 'У проєкті немає текстових файлів' });
     msg = 'CURRENT PROJECT FILES:\n' + parts.join('\n') + (bin.length ? '\n\nBinary files (names only): ' + bin.join(', ') : '') + '\n\nCHANGE REQUEST:\n' + prompt + '\n\nApply the change now, in the required output format.';
-  } else msg = userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
+  } else msg = k3 ? 'Game description:\n' + prompt + (body.name ? '\n\nPreferred game name: ' + String(body.name).slice(0, 60) : '') + '\n\nWrite scene.js and game.js now, in the required output format.' : userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
   const send = o => { try { res.write(JSON.stringify(o) + '\n'); } catch (e) {} };
@@ -336,7 +378,7 @@ async function generate(req, res) {
   res.on('close', () => ac.abort());
   try {
     const reqBody = JSON.stringify({
-      systemInstruction: { parts: [{ text: edit ? SYSTEM_EDIT : SYSTEM }] },
+      systemInstruction: { parts: [{ text: k3 ? SYSTEM_3D : edit ? SYSTEM_EDIT : SYSTEM }] },
       contents: [{ role: 'user', parts: [{ text: msg }] }],
       generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
     });
@@ -391,6 +433,10 @@ async function generate(req, res) {
     if (edit && !Object.keys(out.files).length && !out.deleted.length) {
       send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Відповідь завелика. Опишіть меншу зміну.' : blocked || /SAFETY|BLOCK|PROHIBITED|RECITATION|SPII/.test(stop) ? 'Gemini відхилив запит. Змініть формулювання.' : 'ШІ не запропонував змін. Опишіть точніше, що змінити.' });
     } else if (edit) send({ t: 'done', summary: out.summary, files: out.files, deleted: out.deleted, truncated: stop === 'MAX_TOKENS' });
+    else if (k3) {
+      if (out.files['scene.js'] && out.files['game.js']) send({ t: 'done', name: out.name, files: { 'scene.js': out.files['scene.js'], 'game.js': out.files['game.js'] }, truncated: stop === 'MAX_TOKENS' });
+      else send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Гра вийшла завеликою. Опишіть простішу.' : 'ШІ не повернув коректну 3D-гру. Спробуйте ще раз.' });
+    }
     else if (!out.files['index.html'] && !Object.keys(out.files).some(n => /\.html?$/i.test(n))) {
       send({ t: 'error', message: stop === 'MAX_TOKENS' ? 'Сайт вийшов завеликим. Опишіть простіший або коротший.'
         : blocked || /SAFETY|BLOCK|PROHIBITED|RECITATION|SPII/.test(stop) ? 'Gemini відхилив запит. Змініть опис сайту.'
@@ -1271,6 +1317,14 @@ async function ownerRoute(req, res, url, u, ip) {
     for (const uid of ((await jget('uidx')) || []).slice(-1000)) { const p = await jget('u:' + uid); if (!p || !p.email) continue; const e = await jget('e:' + emailKey(p.email)); out.push({ email: p.email, nick: p.nick, code: e && e.code || '' }); }
     out.sort((a, b) => a.email.localeCompare(b.email)); return json(res, 200, { keys: out });
   }
+  if (url === '/api/owner/grant' && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const nick = String(b.nick || '').trim().toLowerCase(), amt = Math.trunc(+b.amount);
+    if (!nick || !Number.isFinite(amt) || amt === 0 || Math.abs(amt) > 10000000) return json(res, 400, { error: 'Вкажіть нік і суму (ціле число, не нуль)' });
+    const uid = await kvGet('n:' + nick); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' });
+    const bal = await withLock('w:' + uid, async () => { const w = await walletGet(uid); w.c = Math.max(0, (w.c | 0) + amt); await jset(walletKey(uid), w); return w.c; });
+    return json(res, 200, { ok: true, nick: b.nick, balance: bal });
+  }
   if (url === '/api/owner/users' && M === 'GET') {
     const bn = await bansSet(), repos = (await jget('repos')) || [], sites = (await jget('sites')) || [], out = [];
     for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; out.push({ nick: p.nick, created: p.created, email: p.email || '', banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
@@ -1454,6 +1508,13 @@ const server = http.createServer(async (req, res) => {
   const authed = () => !PASSWORD || req.headers['x-app-password'] === PASSWORD;
   try {
     const hostH = String(req.headers.host || '').split(':')[0].toLowerCase();
+    { const vm = url.match(/^\/@([a-z0-9][a-z0-9.-]{2,252})(\/.*)?$/i);
+      if (vm && (req.method === 'GET' || req.method === 'HEAD')) {
+        const dsl = await domainSlug(vm[1].toLowerCase());
+        if (!dsl) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px system-ui;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center"><div><h2>Домен не підключено</h2><p>Додайте цей домен до опублікованого сайту у вікні «Власний домен».</p></div>'); }
+        if (vm[2] === undefined) { res.writeHead(301, { Location: '/@' + vm[1] + '/' + u.search }); return res.end(); }
+        url = '/' + dsl + vm[2];
+      } }
     if (!isMainHost(hostH) && !url.startsWith('/api/')) { const ds = await domainSlug(hostH); if (ds) url = '/' + ds + (url === '' ? '/' : url); }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url === '/' || url === '/index.html')) {
       const st = fs.statSync(INDEX);
@@ -1510,12 +1571,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url === '/api/generate') {
       if (!KEY) return json(res, 503, { error: 'На сервері не задано GEMINI_API_KEY' });
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
-      const own = ownerReq(req);
+      const own = ownerReq(req); if (own) req._pl = 'plus';
       if (!own) {
         if (limited(ip, 'ai', HOURLY_LIMIT)) return json(res, 429, { error: 'Ліміт запитів до ШІ вичерпано. Спробуйте за годину.' });
         const uid = syncUid(req);
         if (uid) {
-          const cfg = await getCfg(), pr = await who(uid); if (pr && pr.pl === 'plus') req._model = PLUS_MODEL;
+          const cfg = await getCfg(), pr = await who(uid); if (pr && pr.pl === 'plus') req._model = PLUS_MODEL; req._pl = pr && pr.pl;
           if (await isBanned(uid)) return json(res, 403, { error: 'Акаунт заблоковано модератором' });
           const cap = pr && pr.ai ? pr.ai : cfg.aiDay;
           if (cap < 0) return json(res, 403, { error: 'Власник вимкнув вам доступ до ШІ' });

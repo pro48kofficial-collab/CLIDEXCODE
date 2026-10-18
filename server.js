@@ -237,6 +237,8 @@ var SCENE = { "game": "custom", "bg": "#0d1117", "fog": true, "ground": {"c": "#
 - anim.type: none, spin, bob, pulse, sway (visual only). Use sparingly for pickups/decor.
 - Give each role several objects with positions where it makes sense (e.g. 8-15 pickups, walls, enemies). Use "cfg" for tunable numbers (speed, spawn rate, ...). Do NOT use model/tex fields (the user adds models and textures later in the editor); if the user supplies them they replace the primitive automatically.
 
+FIRST-PERSON SHOOTER: if the user asks for a shooter/FPS/gun game, the engine already contains a complete one. Then set "game":"shooter" in SCENE and write game.js EXACTLY as: Clx3.shooter(Clx3.boot(SCENE), {title:"<game title>"});  (do not write any other game code). Extra scene.js facts for shooters: t may also be "soldier" (humanoid character, s~1.8, y~0.9) and "gun"; objects may have sx, sy, sz (non-uniform multipliers of s, e.g. a wall 60x4x1 = s:1,sx:60,sy:4,sz:1) and "invisible":true (collider without graphic). Roles: spawn (player start, 1 object, invisible), enemy (each is a spawn point + look of enemies; use 4-8 "soldier" objects), weapon (1 "gun" object held in the camera view: x .25,y -.22,z -.5,s .55), wall (solid: walls/crates/pillars, the arena must be enclosed by 4 wall objects), map (a user-supplied 3D map model, do not invent), health, ammo (pickups, s .6), decor (no collision). SCENE.cfg keys (all optional): hp, dmg, rate, mag, reserve, reload, spread, range, speed, jump, enemyHp, enemySpeed, enemyDmg, enemyRate, maxEnemies, spawnEvery, killsForNext. Make the arena about 60x60 units with ground and a sky colour in bg. Customise via scene.js data (layout, colours, cfg) rather than game.js code.
+
 engine API (already loaded before game.js, do not redefine):
 var ctx = Clx3.boot(SCENE);  // builds the scene from SCENE.objects, creates renderer, camera, lights, ground
 ctx.THREE, ctx.scene, ctx.cam (PerspectiveCamera, you position it), ctx.ren
@@ -1498,6 +1500,147 @@ function roomRoute(req, res, u) {
   return false;
 }
 
+
+/* ===== APK-збірка (без Android SDK) ===== */
+const APKGEN = (() => {
+/* ===== збірка APK без Android SDK: бінарний маніфест + готовий classes.dex + ZIP + підпис v1 ===== */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+const u16 = n => { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b; }, u32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
+function zipBuild(entries) {
+  const loc = [], cen = []; let off = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.name, 'utf8'), data = e.data, crc = crc32(data), comp = e.store ? data : zlib.deflateRawSync(data, { level: 6 }), m = e.store || comp.length >= data.length ? 0 : 8, body = m ? comp : data;
+    const lh = Buffer.concat([u32(0x04034b50), u16(20), u16(0x0800), u16(m), u16(0), u16(0x21), u32(crc), u32(body.length), u32(data.length), u16(name.length), u16(0), name, body]);
+    cen.push(Buffer.concat([u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(m), u16(0), u16(0x21), u32(crc), u32(body.length), u32(data.length), u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(off), name]));
+    loc.push(lh); off += lh.length;
+  }
+  const c = Buffer.concat(cen);
+  return Buffer.concat([...loc, c, u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length), u32(c.length), u32(off), u16(0)]);
+}
+/* ---------- binary AndroidManifest.xml ---------- */
+const NS = 'http://schemas.android.com/apk/res/android';
+const RID = { label: 0x01010001, theme: 0x01010000, name: 0x01010003, exported: 0x01010010, screenOrientation: 0x0101001e, configChanges: 0x0101001f, minSdkVersion: 0x0101020c, versionCode: 0x0101021b, versionName: 0x0101021c, targetSdkVersion: 0x01010270, hardwareAccelerated: 0x010102d3 };
+function axml(root) {
+  const strs = [], add = s => { let i = strs.indexOf(s); if (i < 0) { strs.push(s); i = strs.length - 1; } return i; };
+  const ids = Object.keys(RID).sort((a, b) => RID[a] - RID[b]); ids.forEach(add);
+  add('android'); add(NS);
+  (function walk(n) { add(n.tag); (n.attrs || []).forEach(a => { add(a.name); if (a.t === 's') add(a.v); }); (n.kids || []).forEach(walk); })(root);
+  const sp = [], offs = []; let pos = 0;
+  strs.forEach(s => { offs.push(pos); const b = Buffer.alloc(2 + s.length * 2 + 2); b.writeUInt16LE(s.length, 0); b.write(s, 2, 'utf16le'); sp.push(b); pos += b.length; });
+  let sdata = Buffer.concat(sp); while (sdata.length % 4) sdata = Buffer.concat([sdata, Buffer.alloc(1)]);
+  const spHead = 28 + 4 * strs.length, pool = Buffer.concat([u16(1), u16(28), u32(spHead + sdata.length), u32(strs.length), u32(0), u32(0), u32(spHead), u32(0), ...offs.map(u32), sdata]);
+  const resmap = Buffer.concat([u16(0x180), u16(8), u32(8 + 4 * ids.length), ...ids.map(k => u32(RID[k]))]);
+  const out = [pool, resmap], N = -1, ln = 1;
+  const ns = (type, ) => Buffer.concat([u16(type), u16(16), u32(24), u32(ln), u32(N), u32(add('android')), u32(add(NS))]);
+  out.push(ns(0x100));
+  (function el(n) {
+    const attrs = (n.attrs || []).slice().sort((a, b) => (RID[a.name] && !a.plain ? RID[a.name] : 0) - (RID[b.name] && !b.plain ? RID[b.name] : 0));
+    const ab = attrs.map(a => {
+      const isNs = !a.plain, raw = a.t === 's' ? add(a.v) : N, typ = { s: 3, i: 0x10, h: 0x11, b: 0x12, r: 1 }[a.t], data = a.t === 's' ? add(a.v) : a.t === 'b' ? (a.v ? 0xffffffff : 0) : a.v;
+      return Buffer.concat([u32(isNs ? add(NS) : N), u32(add(a.name)), u32(raw), u16(8), Buffer.from([0, typ]), u32(data)]);
+    });
+    out.push(Buffer.concat([u16(0x102), u16(16), u32(36 + 20 * attrs.length), u32(ln), u32(N), u32(N), u32(add(n.tag)), u16(0x14), u16(0x14), u16(attrs.length), u16(0), u16(0), u16(0), ...ab]));
+    (n.kids || []).forEach(el);
+    out.push(Buffer.concat([u16(0x103), u16(16), u32(24), u32(ln), u32(N), u32(N), u32(add(n.tag))]));
+  })(root);
+  out.push(ns(0x101));
+  const body = Buffer.concat(out);
+  // пул міг поповнитись під час обходу — перебудовуємо, якщо так
+  return { body, count: strs.length, strs };
+}
+function buildManifest(o) {
+  const A = (name, t, v, plain) => ({ name, t, v, plain }), act = { tag: 'activity', attrs: [A('theme', 'r', 0x01030007), A('label', 's', o.title), A('name', 's', 'com.clidex.game.MainActivity'), A('exported', 'b', true), A('configChanges', 'h', 0xfb0), A('screenOrientation', 'i', o.orient)],
+    kids: [{ tag: 'intent-filter', kids: [{ tag: 'action', attrs: [A('name', 's', 'android.intent.action.MAIN')] }, { tag: 'category', attrs: [A('name', 's', 'android.intent.category.LAUNCHER')] }] }] };
+  const root = { tag: 'manifest', attrs: [A('versionCode', 'i', o.code), A('versionName', 's', o.vname), A('package', 's', o.pkg, true)], kids: [
+    { tag: 'uses-sdk', attrs: [A('minSdkVersion', 'i', 21), A('targetSdkVersion', 'i', 28)] },
+    { tag: 'uses-permission', attrs: [A('name', 's', 'android.permission.INTERNET')] },
+    { tag: 'application', attrs: [A('label', 's', o.title), A('hardwareAccelerated', 'b', true)], kids: [act] }] };
+  // двопрохідна збірка, щоб пул рядків був повним до серіалізації
+  let r = axml(root); r = axml(root);
+  const total = 8 + r.body.length; return Buffer.concat([u16(3), u16(8), u32(total), r.body]);
+}
+/* ---------- ASN.1 / сертифікат / PKCS#7 ---------- */
+const der = (tag, ...bufs) => { const body = Buffer.concat(bufs); let len; if (body.length < 128) len = Buffer.from([body.length]); else { const b = []; let n = body.length; while (n) { b.unshift(n & 255); n >>= 8; } len = Buffer.from([0x80 | b.length, ...b]); } return Buffer.concat([Buffer.from([tag]), len, body]); };
+const seq = (...x) => der(0x30, ...x), set = (...x) => der(0x31, ...x), NUL = Buffer.from([5, 0]);
+const dint = b => { if (typeof b === 'number') b = Buffer.from([b]); b = Buffer.from(b); while (b.length > 1 && b[0] === 0 && !(b[1] & 0x80)) b = b.slice(1); if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]); return der(0x02, b); };
+const oid = s => { const p = s.split('.').map(Number), b = [p[0] * 40 + p[1]]; for (const n0 of p.slice(2)) { let n = n0; const t = [n & 127]; n >>= 7; while (n) { t.unshift((n & 127) | 128); n >>= 7; } b.push(...t); } return der(0x06, Buffer.from(b)); };
+const O = { sha256: '2.16.840.1.101.3.4.2.1', rsa: '1.2.840.113549.1.1.1', sha256rsa: '1.2.840.113549.1.1.11', data: '1.2.840.113549.1.7.1', signed: '1.2.840.113549.1.7.2', cn: '2.5.4.3' };
+const dname = cn => seq(set(seq(oid(O.cn), der(0x0c, Buffer.from(cn)))));
+function makeIdentity(cn) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const serial = crypto.randomBytes(8); serial[0] &= 0x7f; if (!serial[0]) serial[0] = 1;
+  const name = dname(cn), alg = seq(oid(O.sha256rsa), NUL);
+  const tbs = seq(der(0xA0, dint(2)), dint(serial), alg, name, seq(der(0x17, Buffer.from('250101000000Z')), der(0x17, Buffer.from('491231235959Z'))), name, Buffer.from(publicKey.export({ type: 'spki', format: 'der' })));
+  const sig = crypto.sign('sha256', tbs, privateKey);
+  const cert = seq(tbs, alg, der(0x03, Buffer.concat([Buffer.from([0]), sig])));
+  return { pem: privateKey.export({ type: 'pkcs8', format: 'pem' }), cert: cert.toString('base64'), name: name.toString('base64'), serial: serial.toString('hex') };
+}
+const b64 = b => b.toString('base64');
+function wrapLine(l) { const out = []; let b = Buffer.from(l, 'utf8'); out.push(b.slice(0, 70).toString('latin1')); b = b.slice(70); while (b.length) { out.push(' ' + b.slice(0, 69).toString('latin1')); b = b.slice(69); } return out.join('\r\n') + '\r\n'; }
+function signApk(files, id) {
+  // files: [{name,data}] без META-INF; повертає записи META-INF
+  let mf = 'Manifest-Version: 1.0\r\nCreated-By: Clidex Editor\r\n\r\n'; const sections = [];
+  for (const f of files) { const sec = wrapLine('Name: ' + f.name) + 'SHA-256-Digest: ' + b64(crypto.createHash('sha256').update(f.data).digest()) + '\r\n\r\n'; sections.push(sec); mf += sec; }
+  const mfB = Buffer.from(mf, 'latin1');
+  let sf = 'Signature-Version: 1.0\r\nCreated-By: Clidex Editor\r\nSHA-256-Digest-Manifest: ' + b64(crypto.createHash('sha256').update(mfB).digest()) + '\r\n\r\n';
+  files.forEach((f, i) => { sf += wrapLine('Name: ' + f.name) + 'SHA-256-Digest: ' + b64(crypto.createHash('sha256').update(Buffer.from(sections[i], 'latin1')).digest()) + '\r\n\r\n'; });
+  const sfB = Buffer.from(sf, 'latin1'), key = crypto.createPrivateKey(id.pem), sig = crypto.sign('sha256', sfB, key);
+  const cert = Buffer.from(id.cert, 'base64'), name = Buffer.from(id.name, 'base64');
+  const signerInfo = seq(dint(1), seq(name, dint(Buffer.from(id.serial, 'hex'))), seq(oid(O.sha256), NUL), seq(oid(O.rsa), NUL), der(0x04, sig));
+  const sd = seq(dint(1), set(seq(oid(O.sha256), NUL)), seq(oid(O.data)), der(0xA0, cert), set(signerInfo));
+  const rsa = seq(oid(O.signed), der(0xA0, sd));
+  return [{ name: 'META-INF/MANIFEST.MF', data: mfB }, { name: 'META-INF/CERT.SF', data: sfB }, { name: 'META-INF/CERT.RSA', data: rsa }];
+}
+function buildApk(o) {
+  // o: {title,pkg,code,vname,orient,dex:Buffer,assets:[{name,data}],identity}
+  const base = [{ name: 'AndroidManifest.xml', data: buildManifest(o), store: true }, { name: 'classes.dex', data: o.dex }, ...o.assets.map(a => ({ name: 'assets/' + a.name, data: a.data }))];
+  return zipBuild([...base, ...signApk(base, o.identity)]);
+}
+return { buildApk, makeIdentity, buildManifest, zipBuild, crc32 };
+
+})();
+const APK_DEX = Buffer.from('ZGV4CjAzNQBaCvpURymOOHJnnzO4sP9MXhlDua1jg3YQBgAAcAAAAHhWNBIAAAAAAAAAAIgFAAAhAAAAcAAAAAwAAAD0AAAACgAAACQBAAAAAAAAAAAAABMAAACcAQAAAQAAADQCAAC8AwAAVAIAAD4DAABGAwAASQMAAEwDAABkAwAAfwMAAJQDAACpAwAAwAMAAN4DAAD4AwAAGAQAACwEAAAvBAAAMwQAADcEAAA7BAAAPgQAAEgEAABqBAAAeAQAAIUEAACQBAAAmQQAAKMEAAC3BAAA1wQAAPwEAAAQBQAAIAUAADYFAABMBQAAcQUAAAEAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAJAAAACgAAAAsAAAAMAAAAEAAAAAIAAAAEAAAAAAAAAAIAAAAFAAAAAAAAAAIAAAAGAAAAAAAAAAwAAAAKAAAAAAAAAA0AAAAKAAAAVAIAAA4AAAAKAAAAXAIAAA4AAAAKAAAAZAIAAA4AAAAKAAAAbAIAAA4AAAAKAAAAdAIAAA8AAAAKAAAAfAIAAAEAAwAAAAAAAQABABUAAAABAAYAFwAAAAEABwAcAAAABAAEACAAAAAFAAQAEQAAAAUAAAATAAAABgAJABgAAAAGAAkAGQAAAAYACQAaAAAABgAJAB0AAAAGAAkAHgAAAAYACQAfAAAABwAFAAAAAAAHAAIAFAAAAAcACAAWAAAABwAEABsAAAAIAAMAAAAAAAgABgAXAAAACAAAAAEAAAABAAAAAAAAAP////8AAAAAMAMAAAAAAAABAAAAAAAAAAEAAAACAAAAAQAAAAMAAAABAAAABAAAAAEAAAAJAAAAAQAAAAsAAAABAAEAAQAAAAAAAAAEAAAAcBAAAAAADgAHAAIAAgAAAAAAAABBAAAAbyACAGUAbhABAAUADAETA4AAbiAFADEAbhAGAAEADAETAwYXbiAEADEAIgAHAHAgDQBQABISEgRuEA4AAAAMAW4gCwAhAG4gCgAhAG4gBwAhAG4gCAAhAG4gCQAhAG4gDABBABQDAAAA/24gEAAwABoDEgBuIA8AMABuIAMABQAOAAAAAAABARGBgASEBRIBnAUGPGluaXQ+AAFJAAFMABZMYW5kcm9pZC9hcHAvQWN0aXZpdHk7ABlMYW5kcm9pZC9jb250ZW50L0NvbnRleHQ7ABNMYW5kcm9pZC9vcy9CdW5kbGU7ABNMYW5kcm9pZC92aWV3L1ZpZXc7ABVMYW5kcm9pZC92aWV3L1dpbmRvdzsAHExhbmRyb2lkL3dlYmtpdC9XZWJTZXR0aW5nczsAGExhbmRyb2lkL3dlYmtpdC9XZWJWaWV3OwAeTGNvbS9jbGlkZXgvZ2FtZS9NYWluQWN0aXZpdHk7ABJMamF2YS9sYW5nL1N0cmluZzsAAVYAAlZJAAJWTAACVloAAVoACGFkZEZsYWdzACBmaWxlOi8vL2FuZHJvaWRfYXNzZXQvaW5kZXguaHRtbAAMZ2V0RGVjb3JWaWV3AAtnZXRTZXR0aW5ncwAJZ2V0V2luZG93AAdsb2FkVXJsAAhvbkNyZWF0ZQASc2V0QWxsb3dGaWxlQWNjZXNzAB5zZXRBbGxvd0ZpbGVBY2Nlc3NGcm9tRmlsZVVSTHMAI3NldEFsbG93VW5pdmVyc2FsQWNjZXNzRnJvbUZpbGVVUkxzABJzZXRCYWNrZ3JvdW5kQ29sb3IADnNldENvbnRlbnRWaWV3ABRzZXREb21TdG9yYWdlRW5hYmxlZAAUc2V0SmF2YVNjcmlwdEVuYWJsZWQAI3NldE1lZGlhUGxheWJhY2tSZXF1aXJlc1VzZXJHZXN0dXJlABVzZXRTeXN0ZW1VaVZpc2liaWxpdHkACwAAAAAAAAABAAAAAAAAAAEAAAAhAAAAcAAAAAIAAAAMAAAA9AAAAAMAAAAKAAAAJAEAAAUAAAATAAAAnAEAAAYAAAABAAAANAIAAAEQAAAGAAAAVAIAAAEgAAACAAAAhAIAAAAgAAABAAAAMAMAAAIgAAAhAAAAPgMAAAAQAAABAAAAiAUAAA==', 'base64');
+const APK_PRICE = 150;
+const APK_LIBS = { 'three.min.js': 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js', 'GLTFLoader.js': 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js', 'OBJLoader.js': 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js' };
+const apkLibCache = new Map();
+async function apkLib(url) {
+  if (apkLibCache.has(url)) return apkLibCache.get(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(25000) }); if (!r.ok) throw new Error('Не вдалося отримати бібліотеку ' + url.split('/').pop() + ' (' + r.status + ')');
+  const b = Buffer.from(await r.arrayBuffer()); apkLibCache.set(url, b); return b;
+}
+async function apkRoute(req, res) {
+  const a = await acct(req, res, true); if (!a) return;
+  if (limited(a.uid, 'apk', 20)) return json(res, 429, { error: 'Забагато збірок за годину. Спробуйте пізніше.' });
+  let b; try { b = JSON.parse(await readBody(req, 40 * 1024 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит або проєкт завеликий (макс. 40 МБ)' }); }
+  const html = String(b.html || ''); if (html.length < 20) return json(res, 400, { error: 'Порожній проєкт' });
+  const title = (String(b.title || 'Game').replace(/[<>&"]/g, '').trim() || 'Game').slice(0, 40), appId = String(b.app || 'app').slice(0, 80);
+  const orient = { landscape: 6, portrait: 7, auto: -1 }[b.orient] ?? -1;
+  const own = ownerReq(req); let left = null;
+  if (!own) {
+    const r = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); if (w.c < APK_PRICE) return false; w.c -= APK_PRICE; await jset(walletKey(a.uid), w); return w.c; });
+    if (r === false) return json(res, 402, { error: 'Для збірки APK потрібно ' + APK_PRICE + ' коінів' });
+    left = r;
+  }
+  const refund = () => own ? 0 : withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c += APK_PRICE; await jset(walletKey(a.uid), w); });
+  try {
+    let page = html; const assets = [];
+    for (const [file, url] of Object.entries(APK_LIBS)) if (page.includes(url)) { page = page.split(url).join('libs/' + file); assets.push({ name: 'libs/' + file, data: await apkLib(url) }); }
+    assets.unshift({ name: 'index.html', data: Buffer.from(page, 'utf8') });
+    let id = await jget('apkid:' + a.uid); if (!id) { id = APKGEN.makeIdentity('Clidex Game ' + a.uid.slice(0, 8)); await jset('apkid:' + a.uid, id); }
+    const vkey = 'apkv:' + a.uid + ':' + sha(appId).slice(0, 16);
+    const ver = await withLock('apkv:' + a.uid, async () => { const v = (await jget(vkey)) || { n: 0 }; v.n++; await jset(vkey, v); return v.n; });
+    const pkg = 'com.clidex.g' + sha(a.uid + ':' + appId).slice(0, 10);
+    const apk = APKGEN.buildApk({ title, pkg, code: ver, vname: '1.' + ver, orient, dex: APK_DEX, assets, identity: id });
+    stat('apk');
+    res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apk.length, 'Cache-Control': 'no-store', 'X-Apk-Version': String(ver), 'X-Apk-Package': pkg, 'X-Coins-Left': left == null ? '' : String(left), 'Access-Control-Expose-Headers': 'X-Apk-Version, X-Apk-Package, X-Coins-Left' });
+    return res.end(apk);
+  } catch (e) {
+    console.error('apk:', e); await refund();
+    return json(res, 500, { error: 'Не вдалося зібрати APK: ' + String(e.message || e).slice(0, 140) + '. Коіни повернено.' });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = clientIp(req);
   { // захист від перевантаження: короткий ліміт запитів з однієї адреси + тимчасовий бан
@@ -1568,6 +1711,7 @@ const server = http.createServer(async (req, res) => {
       if (url === '/api/domains' && M === 'POST') return await domainAdd(req, res);
       if ((am = url.match(/^\/api\/domains\/([a-z0-9.-]{4,253})(\/check)?$/))) { if (M === 'DELETE' && !am[2]) return await domainRemove(req, res, am[1]); if (M === 'GET' && am[2]) return await domainCheck(req, res, am[1]); }
     }
+    if (req.method === 'POST' && url === '/api/apk') { if (!authed()) return json(res, 401, { error: 'Невірний пароль' }); return await apkRoute(req, res); }
     if (req.method === 'POST' && url === '/api/generate') {
       if (!KEY) return json(res, 503, { error: 'На сервері не задано GEMINI_API_KEY' });
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });

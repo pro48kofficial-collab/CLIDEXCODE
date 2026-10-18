@@ -803,13 +803,14 @@ async function oauthCallback(req, res, prov, url) {
     const idx = await jget(ok);
     if (st.mode === 'link') {
       if (idx && idx.uid !== st.uid) return back('oautherr=' + encodeURIComponent('Цей обліковий запис уже прив’язаний до іншого профілю'));
-      await jset(ok, { uid: st.uid, code: st.code });
+      await jset(ok, { uid: st.uid, code: st.code }); await jset('oam:' + st.uid, { prov, t: Date.now() });
       const p = await jget('u:' + st.uid); if (p) { p.oa = Object.assign({}, p.oa, { [prov]: idn.name || true }); await jset('u:' + st.uid, p); whoCache.delete(st.uid); }
       return back('oauthok=' + prov);
     }
     let code = idx && idx.code, isNew = false;
     if (!code && idn.email) { const e = await jget('e:' + emailKey(idn.email)); if (e && e.code) { code = e.code; await jset(ok, { uid: sha('clidex-sync:' + code), code }); } }
     if (!code) { code = crypto.randomBytes(24).toString('base64url'); isNew = true; await jset(ok, { uid: sha('clidex-sync:' + code), code }); }
+    await jset('oam:' + sha('clidex-sync:' + code), { prov, t: Date.now() }); // вхід через GitHub/Google = підтверджений акаунт, як з поштою
     const tk = crypto.randomBytes(18).toString('base64url');
     await jset('ot:' + tk, { code, exp: Date.now() + 120000, isNew, name: idn.name });
     return back('oauth=' + tk);
@@ -830,7 +831,7 @@ const cleanTags = a => (Array.isArray(a) ? a : []).map(String).filter(t => TAGS.
 const WEEK = 7 * 86400e3;
 const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && p.fr || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
 async function emailOk(a, res) {
-  if ((await getCfg()).requireEmail && !a.p.email) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
+  if ((await getCfg()).requireEmail && !a.p.email && !(a.p.oa && Object.keys(a.p.oa).length) && !(await jget('oam:' + a.uid))) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
   return true;
 }
 async function repoPut(req, res, pid) {
@@ -1329,7 +1330,7 @@ async function ownerRoute(req, res, url, u, ip) {
   }
   if (url === '/api/owner/users' && M === 'GET') {
     const bn = await bansSet(), repos = (await jget('repos')) || [], sites = (await jget('sites')) || [], out = [];
-    for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; out.push({ nick: p.nick, created: p.created, email: p.email || '', banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
+    for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; const oam = p.email ? null : await jget('oam:' + uid), oav = oam ? (oam.prov === 'github' ? 'GitHub' : 'Google') : (p.oa && Object.keys(p.oa)[0] ? (Object.keys(p.oa)[0] === 'github' ? 'GitHub' : 'Google') : ''); out.push({ nick: p.nick, created: p.created, email: p.email || (oav ? oav + ' ✓' : ''), banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
     out.sort((a, b) => b.created - a.created); return json(res, 200, { users: out });
   }
   if ((m = url.match(/^\/api\/owner\/users\/([^/]{1,60})$/)) && M === 'POST') {

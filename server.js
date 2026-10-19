@@ -237,6 +237,8 @@ var SCENE = { "game": "custom", "bg": "#0d1117", "fog": true, "ground": {"c": "#
 - anim.type: none, spin, bob, pulse, sway (visual only). Use sparingly for pickups/decor.
 - Give each role several objects with positions where it makes sense (e.g. 8-15 pickups, walls, enemies). Use "cfg" for tunable numbers (speed, spawn rate, ...). Do NOT use model/tex fields (the user adds models and textures later in the editor); if the user supplies them they replace the primitive automatically.
 
+ATTACHED FILES: when the message lists attached 3D model or image files, use them: only the exact listed paths. Map/arena file -> object t:"model", role "map", s about 60 (shooter: do not add the default walls). Weapon file -> role "weapon" t:"model" (x .25,y -.22,z -.5,s .5). Character/skin/enemy file -> t:"model" object with role "enemy" (s about 1.8) or "player". Image -> "tex" on an object or on ground. Other models -> role "decor" unless told otherwise. Set "mt":"obj" for .obj files, "glb" otherwise.
+
 FIRST-PERSON SHOOTER: if the user asks for a shooter/FPS/gun game, the engine already contains a complete one. Then set "game":"shooter" in SCENE and write game.js EXACTLY as: Clx3.shooter(Clx3.boot(SCENE), {title:"<game title>"});  (do not write any other game code). Extra scene.js facts for shooters: t may also be "soldier" (humanoid character, s~1.8, y~0.9) and "gun"; objects may have sx, sy, sz (non-uniform multipliers of s, e.g. a wall 60x4x1 = s:1,sx:60,sy:4,sz:1) and "invisible":true (collider without graphic). Roles: spawn (player start, 1 object, invisible), enemy (each is a spawn point + look of enemies; use 4-8 "soldier" objects), weapon (1 "gun" object held in the camera view: x .25,y -.22,z -.5,s .55), wall (solid: walls/crates/pillars, the arena must be enclosed by 4 wall objects), map (a user-supplied 3D map model, do not invent), health, ammo (pickups, s .6), decor (no collision). SCENE.cfg keys (all optional): hp, dmg, rate, mag, reserve, reload, spread, range, speed, jump, enemyHp, enemySpeed, enemyDmg, enemyRate, maxEnemies, spawnEvery, killsForNext. Make the arena about 60x60 units with ground and a sky colour in bg. Customise via scene.js data (layout, colours, cfg) rather than game.js code.
 
 engine API (already loaded before game.js, do not redefine):
@@ -343,6 +345,18 @@ function parseOutput(text) {
   return { name, files, deleted, summary };
 }
 
+const SYSTEM_3D_NOTES = `3D GAME PROJECT RULES (this project is a 3D game built on three.js r128 + Clx3 engine; game data lives in scene.js as "var SCENE = {...};", the files index.html and engine.js must NOT be changed):
+- SCENE.objects items: {id,name,t(box|sphere|cylinder|cone|plane|torus|soldier|gun|model),c,tex,model,mt('glb'|'obj'),x,y,z,s,ry,sx,sy,sz,role,anim{type,speed,amp},invisible}. Keep every existing object unless asked to remove it; give new objects unique ids.
+- A user-supplied 3D model is an object with t:"model", "model":"<exact path of the attached file>", "mt":"glb" for .glb/.gltf or "obj" for .obj, plus x,y,z,s,ry,role. A photo/texture is applied with "tex":"<exact path>" on an object (or "ground":{"c":"#..","tex":"<path>"} for the floor). NEVER invent file paths: use only the attached paths listed in the message.
+- Attached file meaning by the user's words: "map/level/arena" -> role "map" (t:"model", s about 60, x:0,y:0,z:0; remove or keep the old walls only if asked; in a shooter the map replaces the arena walls); "weapon/gun" -> role "weapon" (shooter: held in view, x .25,y -.22,z -.5, s .5); "character/skin/enemy" -> replaces the look of an enemy: change a role "enemy" object to t:"model" with the path (keep its x,y,z; s about 1.8 for humanoids); player skin in non-shooter games -> role "player"; other models -> role "decor" or what the user says.
+- If SCENE.game is "shooter", game.js stays exactly Clx3.shooter(Clx3.boot(SCENE), {...}); roles: spawn, enemy, weapon, wall, map, health, ammo, decor; cfg keys hp,dmg,rate,mag,reserve,reload,spread,range,speed,jump,enemyHp,enemySpeed,enemyDmg,enemyRate,maxEnemies,spawnEvery,killsForNext.
+- Return only the files that change (normally scene.js).`;
+function attText(models, images) {
+  let t = '';
+  if (models.length) t += '\n\nATTACHED 3D MODEL FILES (already saved in the project at these exact paths; the user decides what each is in the request):\n' + models.map(m => '- ' + m.name + ' (' + m.mt + (m.size ? ', ' + Math.round(m.size / 1024) + ' KB' : '') + ')').join('\n');
+  if (images.length) t += '\n\nATTACHED IMAGE FILES (saved in the project at these exact paths; small previews follow so you can see them):\n' + images.map(i => '- ' + i.name + (i.w && i.h ? ' (' + i.w + 'x' + i.h + 'px)' : '')).join('\n');
+  return t;
+}
 function userMessage(b) {
   let m = 'Website description:\n' + b.prompt;
   if (b.name) m += '\n\nPreferred site name: ' + b.name;
@@ -352,15 +366,19 @@ function userMessage(b) {
 
 async function generate(req, res) {
   let body;
-  try { body = JSON.parse(await readBody(req, 700 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
+  try { body = JSON.parse(await readBody(req, 1600 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
   const edit = body.mode === 'edit', k3 = body.kind === '3d' && !edit;
   if (k3 && req._pl !== 'pro' && req._pl !== 'plus') return json(res, 403, { error: '3D-ігри від ШІ доступні з тарифом Pro або Plus' });
   const prompt = String(body.prompt || '').trim().slice(0, 4000);
   if (prompt.length < 5) return json(res, 400, { error: 'Опишіть сайт трохи детальніше' });
   const images = (Array.isArray(body.images) ? body.images : []).slice(0, 12)
-    .map(i => ({ name: String(i && i.name || '').slice(0, 80), w: +i.w || 0, h: +i.h || 0 }))
+    .map(i => ({ name: String(i && i.name || '').slice(0, 80), w: +i.w || 0, h: +i.h || 0, pv: /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(String(i && i.preview || '')) && String(i.preview).length < 160000 ? String(i.preview) : '' }))
     .filter(i => OK_NAME.test(i.name) && !i.name.includes('..'));
-  let msg;
+  const models = (Array.isArray(body.models) ? body.models : []).slice(0, 8)
+    .map(m => ({ name: String(m && m.name || '').slice(0, 90), size: +m.size || 0, mt: /\.obj$/i.test(String(m && m.name)) ? 'obj' : 'glb' }))
+    .filter(m => /^models\/[A-Za-z0-9_][A-Za-z0-9_\-.]*\.(glb|gltf|obj)$/i.test(m.name) && !m.name.includes('..'));
+  const pvParts = images.filter(i => i.pv).slice(0, 6).flatMap(i => { const mm = /^data:(image\/[a-z]+);base64,(.+)$/.exec(i.pv); return mm ? [{ text: 'Preview of ' + i.name + ':' }, { inlineData: { mimeType: mm[1], data: mm[2] } }] : []; });
+  let msg; const is3dEdit = edit && body.files && typeof body.files === 'object' && body.files['scene.js'] !== undefined && body.files['engine.js'] !== undefined;
   if (edit) {
     const src = body.files && typeof body.files === 'object' ? body.files : {}; let total = 0, parts = [], bin = [];
     for (const k of Object.keys(src).slice(0, 80)) {
@@ -371,8 +389,8 @@ async function generate(req, res) {
       parts.push('<<<FILE: ' + k + '>>>\n' + v + '\n<<<END>>>');
     }
     if (!parts.length) return json(res, 400, { error: 'У проєкті немає текстових файлів' });
-    msg = 'CURRENT PROJECT FILES:\n' + parts.join('\n') + (bin.length ? '\n\nBinary files (names only): ' + bin.join(', ') : '') + '\n\nCHANGE REQUEST:\n' + prompt + '\n\nApply the change now, in the required output format.';
-  } else msg = k3 ? 'Game description:\n' + prompt + (body.name ? '\n\nPreferred game name: ' + String(body.name).slice(0, 60) : '') + '\n\nWrite scene.js and game.js now, in the required output format.' : userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
+    msg = 'CURRENT PROJECT FILES:\n' + parts.join('\n') + (bin.length ? '\n\nBinary files (names only): ' + bin.join(', ') : '') + attText(models, images) + '\n\nCHANGE REQUEST:\n' + prompt + '\n\nApply the change now, in the required output format.';
+  } else msg = k3 ? 'Game description:\n' + prompt + (body.name ? '\n\nPreferred game name: ' + String(body.name).slice(0, 60) : '') + attText(models, images) + '\n\nWrite scene.js and game.js now, in the required output format.' : userMessage({ prompt, name: String(body.name || '').trim().slice(0, 60), images });
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
   const send = o => { try { res.write(JSON.stringify(o) + '\n'); } catch (e) {} };
@@ -380,8 +398,8 @@ async function generate(req, res) {
   res.on('close', () => ac.abort());
   try {
     const reqBody = JSON.stringify({
-      systemInstruction: { parts: [{ text: k3 ? SYSTEM_3D : edit ? SYSTEM_EDIT : SYSTEM }] },
-      contents: [{ role: 'user', parts: [{ text: msg }] }],
+      systemInstruction: { parts: [{ text: k3 ? SYSTEM_3D : edit ? SYSTEM_EDIT + (is3dEdit ? '\n\n' + SYSTEM_3D_NOTES : '') : SYSTEM }] },
+      contents: [{ role: 'user', parts: [{ text: msg }].concat(pvParts) }],
       generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.8 }
     });
     // Gemini часто повертає 503 «перевантажено»: пробуємо ще раз; якщо моделі не існує (404) або вона перевантажена — переходимо на запасну
@@ -1521,7 +1539,7 @@ function zipBuild(entries) {
 }
 /* ---------- binary AndroidManifest.xml ---------- */
 const NS = 'http://schemas.android.com/apk/res/android';
-const RID = { label: 0x01010001, theme: 0x01010000, name: 0x01010003, exported: 0x01010010, screenOrientation: 0x0101001e, configChanges: 0x0101001f, minSdkVersion: 0x0101020c, versionCode: 0x0101021b, versionName: 0x0101021c, targetSdkVersion: 0x01010270, hardwareAccelerated: 0x010102d3 };
+const RID = { label: 0x01010001, theme: 0x01010000, name: 0x01010003, exported: 0x01010010, screenOrientation: 0x0101001e, configChanges: 0x0101001f, minSdkVersion: 0x0101020c, versionCode: 0x0101021b, versionName: 0x0101021c, targetSdkVersion: 0x01010270, hardwareAccelerated: 0x010102d3, icon: 0x01010002 };
 function axml(root) {
   const strs = [], add = s => { let i = strs.indexOf(s); if (i < 0) { strs.push(s); i = strs.length - 1; } return i; };
   const ids = Object.keys(RID).sort((a, b) => RID[a] - RID[b]); ids.forEach(add);
@@ -1556,7 +1574,7 @@ function buildManifest(o) {
   const root = { tag: 'manifest', attrs: [A('versionCode', 'i', o.code), A('versionName', 's', o.vname), A('package', 's', o.pkg, true)], kids: [
     { tag: 'uses-sdk', attrs: [A('minSdkVersion', 'i', 21), A('targetSdkVersion', 'i', 28)] },
     { tag: 'uses-permission', attrs: [A('name', 's', 'android.permission.INTERNET')] },
-    { tag: 'application', attrs: [A('label', 's', o.title), A('hardwareAccelerated', 'b', true)], kids: [act] }] };
+    { tag: 'application', attrs: [A('label', 's', o.title), A('hardwareAccelerated', 'b', true)].concat(o.icon ? [A('icon', 'r', 0x7f010000)] : []), kids: [act] }] };
   // двопрохідна збірка, щоб пул рядків був повним до серіалізації
   let r = axml(root); r = axml(root);
   const total = 8 + r.body.length; return Buffer.concat([u16(3), u16(8), u32(total), r.body]);
@@ -1593,12 +1611,30 @@ function signApk(files, id) {
   const rsa = seq(oid(O.signed), der(0xA0, sd));
   return [{ name: 'META-INF/MANIFEST.MF', data: mfB }, { name: 'META-INF/CERT.SF', data: sfB }, { name: 'META-INF/CERT.RSA', data: rsa }];
 }
+function strPool(list) {
+  const sp = [], offs = []; let pos = 0;
+  list.forEach(t => { offs.push(pos); const b = Buffer.alloc(2 + t.length * 2 + 2); b.writeUInt16LE(t.length, 0); b.write(t, 2, 'utf16le'); sp.push(b); pos += b.length; });
+  let sdata = Buffer.concat(sp); while (sdata.length % 4) sdata = Buffer.concat([sdata, Buffer.alloc(1)]);
+  const head = 28 + 4 * list.length;
+  return Buffer.concat([u16(1), u16(28), u32(head + sdata.length), u32(list.length), u32(0), u32(0), u32(head), u32(0), ...offs.map(u32), sdata]);
+}
+function buildArsc(pkg, path) { // мінімальна таблиця ресурсів: 0x7f010000 = drawable/icon -> path
+  const gp = strPool([path]), tp = strPool(['drawable']), kp = strPool(['icon']);
+  const name = Buffer.alloc(256); name.write(pkg, 0, 'utf16le');
+  const spec = Buffer.concat([u16(0x202), u16(16), u32(20), Buffer.from([1, 0]), u16(0), u32(1), u32(0)]);
+  const cfg = Buffer.alloc(64); cfg.writeUInt32LE(64, 0);
+  const typ = Buffer.concat([u16(0x201), u16(84), u32(104), Buffer.from([1, 0]), u16(0), u32(1), u32(88), cfg, u32(0), u16(8), u16(0), u32(0), u16(8), Buffer.from([0, 3]), u32(0)]);
+  const phead = 288, body = Buffer.concat([tp, kp, spec, typ]);
+  const pk = Buffer.concat([u16(0x200), u16(phead), u32(phead + body.length), u32(0x7f), name, u32(phead), u32(1), u32(phead + tp.length), u32(1), u32(0), body]);
+  return Buffer.concat([u16(2), u16(12), u32(12 + gp.length + pk.length), u32(1), gp, pk]);
+}
 function buildApk(o) {
   // o: {title,pkg,code,vname,orient,dex:Buffer,assets:[{name,data}],identity}
   const base = [{ name: 'AndroidManifest.xml', data: buildManifest(o), store: true }, { name: 'classes.dex', data: o.dex }, ...o.assets.map(a => ({ name: 'assets/' + a.name, data: a.data }))];
+  if (o.icon) base.push({ name: 'resources.arsc', data: buildArsc(o.pkg, 'res/drawable/icon.png'), store: true }, { name: 'res/drawable/icon.png', data: o.icon });
   return zipBuild([...base, ...signApk(base, o.identity)]);
 }
-return { buildApk, makeIdentity, buildManifest, zipBuild, crc32 };
+return { buildApk, makeIdentity, buildManifest, buildArsc, zipBuild, crc32 };
 
 })();
 const APK_DEX = Buffer.from('ZGV4CjAzNQBaCvpURymOOHJnnzO4sP9MXhlDua1jg3YQBgAAcAAAAHhWNBIAAAAAAAAAAIgFAAAhAAAAcAAAAAwAAAD0AAAACgAAACQBAAAAAAAAAAAAABMAAACcAQAAAQAAADQCAAC8AwAAVAIAAD4DAABGAwAASQMAAEwDAABkAwAAfwMAAJQDAACpAwAAwAMAAN4DAAD4AwAAGAQAACwEAAAvBAAAMwQAADcEAAA7BAAAPgQAAEgEAABqBAAAeAQAAIUEAACQBAAAmQQAAKMEAAC3BAAA1wQAAPwEAAAQBQAAIAUAADYFAABMBQAAcQUAAAEAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAJAAAACgAAAAsAAAAMAAAAEAAAAAIAAAAEAAAAAAAAAAIAAAAFAAAAAAAAAAIAAAAGAAAAAAAAAAwAAAAKAAAAAAAAAA0AAAAKAAAAVAIAAA4AAAAKAAAAXAIAAA4AAAAKAAAAZAIAAA4AAAAKAAAAbAIAAA4AAAAKAAAAdAIAAA8AAAAKAAAAfAIAAAEAAwAAAAAAAQABABUAAAABAAYAFwAAAAEABwAcAAAABAAEACAAAAAFAAQAEQAAAAUAAAATAAAABgAJABgAAAAGAAkAGQAAAAYACQAaAAAABgAJAB0AAAAGAAkAHgAAAAYACQAfAAAABwAFAAAAAAAHAAIAFAAAAAcACAAWAAAABwAEABsAAAAIAAMAAAAAAAgABgAXAAAACAAAAAEAAAABAAAAAAAAAP////8AAAAAMAMAAAAAAAABAAAAAAAAAAEAAAACAAAAAQAAAAMAAAABAAAABAAAAAEAAAAJAAAAAQAAAAsAAAABAAEAAQAAAAAAAAAEAAAAcBAAAAAADgAHAAIAAgAAAAAAAABBAAAAbyACAGUAbhABAAUADAETA4AAbiAFADEAbhAGAAEADAETAwYXbiAEADEAIgAHAHAgDQBQABISEgRuEA4AAAAMAW4gCwAhAG4gCgAhAG4gBwAhAG4gCAAhAG4gCQAhAG4gDABBABQDAAAA/24gEAAwABoDEgBuIA8AMABuIAMABQAOAAAAAAABARGBgASEBRIBnAUGPGluaXQ+AAFJAAFMABZMYW5kcm9pZC9hcHAvQWN0aXZpdHk7ABlMYW5kcm9pZC9jb250ZW50L0NvbnRleHQ7ABNMYW5kcm9pZC9vcy9CdW5kbGU7ABNMYW5kcm9pZC92aWV3L1ZpZXc7ABVMYW5kcm9pZC92aWV3L1dpbmRvdzsAHExhbmRyb2lkL3dlYmtpdC9XZWJTZXR0aW5nczsAGExhbmRyb2lkL3dlYmtpdC9XZWJWaWV3OwAeTGNvbS9jbGlkZXgvZ2FtZS9NYWluQWN0aXZpdHk7ABJMamF2YS9sYW5nL1N0cmluZzsAAVYAAlZJAAJWTAACVloAAVoACGFkZEZsYWdzACBmaWxlOi8vL2FuZHJvaWRfYXNzZXQvaW5kZXguaHRtbAAMZ2V0RGVjb3JWaWV3AAtnZXRTZXR0aW5ncwAJZ2V0V2luZG93AAdsb2FkVXJsAAhvbkNyZWF0ZQASc2V0QWxsb3dGaWxlQWNjZXNzAB5zZXRBbGxvd0ZpbGVBY2Nlc3NGcm9tRmlsZVVSTHMAI3NldEFsbG93VW5pdmVyc2FsQWNjZXNzRnJvbUZpbGVVUkxzABJzZXRCYWNrZ3JvdW5kQ29sb3IADnNldENvbnRlbnRWaWV3ABRzZXREb21TdG9yYWdlRW5hYmxlZAAUc2V0SmF2YVNjcmlwdEVuYWJsZWQAI3NldE1lZGlhUGxheWJhY2tSZXF1aXJlc1VzZXJHZXN0dXJlABVzZXRTeXN0ZW1VaVZpc2liaWxpdHkACwAAAAAAAAABAAAAAAAAAAEAAAAhAAAAcAAAAAIAAAAMAAAA9AAAAAMAAAAKAAAAJAEAAAUAAAATAAAAnAEAAAYAAAABAAAANAIAAAEQAAAGAAAAVAIAAAEgAAACAAAAhAIAAAAgAAABAAAAMAMAAAIgAAAhAAAAPgMAAAAQAAABAAAAiAUAAA==', 'base64');
@@ -1617,6 +1653,9 @@ async function apkRoute(req, res) {
   const html = String(b.html || ''); if (html.length < 20) return json(res, 400, { error: 'Порожній проєкт' });
   const title = (String(b.title || 'Game').replace(/[<>&"]/g, '').trim() || 'Game').slice(0, 40), appId = String(b.app || 'app').slice(0, 80);
   const orient = { landscape: 6, portrait: 7, auto: -1 }[b.orient] ?? -1;
+  const rawTitle = String(b.title || '').replace(/[<>&"]/g, '').trim(); if (rawTitle.length < 2) return json(res, 400, { error: 'Введіть назву застосунку' });
+  const im = /^data:image\/png;base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.icon || '')); const iconBuf = im ? Buffer.from(im[1], 'base64') : null;
+  if (!iconBuf || iconBuf.length < 100 || iconBuf.length > 400 * 1024 || iconBuf.readUInt32BE(0) !== 0x89504e47) return json(res, 400, { error: 'Виберіть іконку з галереї (PNG до 400 КБ)' });
   const own = ownerReq(req); let left = null;
   if (!own) {
     const r = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); if (w.c < APK_PRICE) return false; w.c -= APK_PRICE; await jset(walletKey(a.uid), w); return w.c; });
@@ -1626,13 +1665,15 @@ async function apkRoute(req, res) {
   const refund = () => own ? 0 : withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c += APK_PRICE; await jset(walletKey(a.uid), w); });
   try {
     let page = html; const assets = [];
+    const splash = '<div id="clx-splash" style="position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;background:#0d1117;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font:600 17px system-ui,sans-serif;transition:opacity .5s;text-align:center"><img src="' + String(b.icon) + '" style="width:96px;height:96px;border-radius:22px;margin-bottom:18px"><div style="font-size:22px;margin-bottom:6px">' + title + '</div><div style="opacity:.75">Made by Clidex Editor</div></div><script>(function(){var t0=Date.now(),s=document.getElementById("clx-splash");function hide(){var w=Math.max(0,2200-(Date.now()-t0));setTimeout(function(){if(!s)return;s.style.opacity=0;setTimeout(function(){if(s.parentNode)s.parentNode.removeChild(s)},550)},w)}if(document.readyState==="complete")hide();else addEventListener("load",hide);setTimeout(hide,9000)})()<\/script>';
+    page = /<body[^>]*>/i.test(page) ? page.replace(/<body[^>]*>/i, m => m + splash) : splash + page;
     for (const [file, url] of Object.entries(APK_LIBS)) if (page.includes(url)) { page = page.split(url).join('libs/' + file); assets.push({ name: 'libs/' + file, data: await apkLib(url) }); }
     assets.unshift({ name: 'index.html', data: Buffer.from(page, 'utf8') });
     let id = await jget('apkid:' + a.uid); if (!id) { id = APKGEN.makeIdentity('Clidex Game ' + a.uid.slice(0, 8)); await jset('apkid:' + a.uid, id); }
     const vkey = 'apkv:' + a.uid + ':' + sha(appId).slice(0, 16);
     const ver = await withLock('apkv:' + a.uid, async () => { const v = (await jget(vkey)) || { n: 0 }; v.n++; await jset(vkey, v); return v.n; });
     const pkg = 'com.clidex.g' + sha(a.uid + ':' + appId).slice(0, 10);
-    const apk = APKGEN.buildApk({ title, pkg, code: ver, vname: '1.' + ver, orient, dex: APK_DEX, assets, identity: id });
+    const apk = APKGEN.buildApk({ icon: iconBuf, title, pkg, code: ver, vname: '1.' + ver, orient, dex: APK_DEX, assets, identity: id });
     stat('apk');
     res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apk.length, 'Cache-Control': 'no-store', 'X-Apk-Version': String(ver), 'X-Apk-Package': pkg, 'X-Coins-Left': left == null ? '' : String(left), 'Access-Control-Expose-Headers': 'X-Apk-Version, X-Apk-Package, X-Coins-Left' });
     return res.end(apk);

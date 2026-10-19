@@ -593,7 +593,18 @@ async function who(uid) {
   const c = whoCache.get(uid); if (c && Date.now() - c.t < 60000) return c.p;
   const p = await jget('u:' + uid); whoCache.set(uid, { t: Date.now(), p }); if (whoCache.size > 500) whoCache.delete(whoCache.keys().next().value); return p;
 }
-const pubProfile = (p, self) => ({ nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
+const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') : '';
+function socialNorm(kind, v) { // повертає нормалізоване посилання, '' (очистити) або null (некоректне)
+  v = String(v == null ? '' : v).trim(); if (!v) return '';
+  if (v.length > 200) return null; if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+  let u; try { u = new URL(v); } catch (e) { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null; if (u.username || u.password) return null;
+  const host = u.hostname.toLowerCase().replace(/^(www|m)\./, '');
+  const path = u.pathname.replace(/\/+$/, '');
+  if (kind === 'yt') { if (host !== 'youtube.com' || !/^\/(@[\w.\-]{2,60}|channel\/[\w\-]{10,40}|c\/[^\/\s]{1,60}|user\/[^\/\s]{1,60})$/.test(path)) return null; return 'https://www.youtube.com' + path; }
+  if (host !== 'tiktok.com' || !/^\/@[\w.\-]{2,40}$/.test(path)) return null; return 'https://www.tiktok.com' + path;
+}
+const pubProfile = (p, self) => ({ yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -635,6 +646,8 @@ async function mePut(req, res) {
       p.av = Date.now().toString(36);
     }
     if (b.bio !== undefined) p.bio = String(b.bio).slice(0, 200);
+    for (const [k, nm] of [['yt', 'YouTube'], ['tt', 'TikTok']]) if (b[k] !== undefined) { const v = socialNorm(k, b[k]); if (v === null) return json(res, 400, { error: 'Некоректне посилання на ' + nm + (k === 'yt' ? ' (потрібне посилання на канал: youtube.com/@назва)' : ' (потрібне посилання на профіль: tiktok.com/@назва)') }); p[k] = v; }
+    if (!p.yt && !p.tt) p.vf = false; // без каналів галочка не діє
     if (b.notifyEmail !== undefined) p.nm = !!b.notifyEmail;
     if (b.nc !== undefined || b.fr !== undefined) {
       if ((await planOfUid(uid)) !== 'plus') return json(res, 403, { error: 'Кольоровий нік і рамки — у тарифі Clidex Plus' });
@@ -847,7 +860,7 @@ const REPO_MAX = 3 * 1048576;
 const TAGS = ['game', 'landing', 'portfolio', 'shop', 'blog', 'tool', 'template', 'other'];
 const cleanTags = a => (Array.isArray(a) ? a : []).map(String).filter(t => TAGS.includes(t)).filter((t, i, s) => s.indexOf(t) === i).slice(0, 3);
 const WEEK = 7 * 86400e3;
-const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && p.fr || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
+const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', obd: bdOf(p), opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && p.fr || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
 async function emailOk(a, res) {
   if ((await getCfg()).requireEmail && !a.p.email && !(a.p.oa && Object.keys(a.p.oa).length) && !(await jget('oam:' + a.uid))) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
   return true;
@@ -935,7 +948,7 @@ async function feedList(req, res, u) {
   if (filter === 'following') { const fw = me ? (await jget('fw:' + me)) || [] : []; posts = posts.filter(x => fw.includes(x.uid)); }
   if (sort === 'top') posts = posts.filter(x => Date.now() - x.t < WEEK).sort((a, b) => b.likes.length - a.likes.length || b.t - a.t);
   posts = posts.slice(0, 60);
-  const out = await Promise.all(posts.map(async x => { const p = await who(x.uid), r = x.repo && repos.find(y => y.id === x.repo && !y.hidden && (y.vis || 'public') === 'public'); return { id: x.id, t: x.t, text: x.text, nick: p ? p.nick : '?', av: p && p.avatar ? p.av : '', likes: x.likes.length, liked: !!(me && x.likes.includes(short(me))), mine: !!me && x.uid === me, repo: r ? { id: r.id, name: r.name } : null, cc: x.cc || 0, hidden: !!x.hidden }; }));
+  const out = await Promise.all(posts.map(async x => { const p = await who(x.uid), r = x.repo && repos.find(y => y.id === x.repo && !y.hidden && (y.vis || 'public') === 'public'); return { id: x.id, t: x.t, text: x.text, nick: p ? p.nick : '?', av: p && p.avatar ? p.av : '', bd: bdOf(p), likes: x.likes.length, liked: !!(me && x.likes.includes(short(me))), mine: !!me && x.uid === me, repo: r ? { id: r.id, name: r.name } : null, cc: x.cc || 0, hidden: !!x.hidden }; }));
   return json(res, 200, { posts: out });
 }
 async function feedPost(req, res, ip) {
@@ -1129,7 +1142,7 @@ async function cmList(req, res, kind, id) {
   const t = await cmTarget(kind, id), me = syncUid(req), own = ownerReq(req);
   if (!t || (!own && t.uid !== me && (t.hidden || t.vis === 'private'))) return json(res, 404, { error: 'Не знайдено' });
   const bn = await bansSet(), l = ((await jget('cm:' + kind + ':' + id)) || []).filter(c => own || c.uid === me || (!c.hidden && !bn.has(c.uid)));
-  const out = await Promise.all(l.map(async c => { const p = await who(c.uid); return { id: c.id, t: c.t, text: c.text, nick: p ? p.nick : '?', av: p && p.avatar ? p.av : '', mine: !!me && c.uid === me, can: own || (!!me && (c.uid === me || t.uid === me)), hidden: !!c.hidden }; }));
+  const out = await Promise.all(l.map(async c => { const p = await who(c.uid); return { id: c.id, t: c.t, text: c.text, nick: p ? p.nick : '?', av: p && p.avatar ? p.av : '', bd: bdOf(p), mine: !!me && c.uid === me, can: own || (!!me && (c.uid === me || t.uid === me)), hidden: !!c.hidden }; }));
   return json(res, 200, { comments: out });
 }
 async function cmPost(req, res, kind, id) {
@@ -1234,7 +1247,7 @@ async function sitesCatalog(req, res, u) {
   for (const m of (await jget('sites')) || []) {
     if (m.vis !== 'public' || m.hidden || (m.uid && bn.has(m.uid))) continue; if (tag && !(m.tags || []).includes(tag)) continue;
     const p = m.uid ? await who(m.uid) : null; if (q && !(m.name + ' ' + m.desc + ' ' + (p ? p.nick : '')).toLowerCase().includes(q)) continue;
-    out.push({ slug: m.slug, path: '/' + m.slug + '/', name: m.name || m.slug, desc: m.desc, tags: m.tags, updated: m.updated, owner: p ? p.nick : '', av: p && p.avatar ? p.av : '' });
+    out.push({ slug: m.slug, path: '/' + m.slug + '/', name: m.name || m.slug, desc: m.desc, tags: m.tags, updated: m.updated, owner: p ? p.nick : '', av: p && p.avatar ? p.av : '', obd: bdOf(p) });
   }
   out.sort((a, b) => b.updated - a.updated); return json(res, 200, { sites: out.slice(0, 60) });
 }
@@ -1346,9 +1359,17 @@ async function ownerRoute(req, res, url, u, ip) {
     const bal = await withLock('w:' + uid, async () => { const w = await walletGet(uid); w.c = Math.max(0, (w.c | 0) + amt); await jset(walletKey(uid), w); return w.c; });
     return json(res, 200, { ok: true, nick: b.nick, balance: bal });
   }
+  if (url === '/api/owner/verify' && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const uid = await kvGet('n:' + String(b.nick || '').trim().toLowerCase()); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' });
+    const r = await withLock('u:' + uid, async () => { const p = await jget('u:' + uid); if (!p) return null; if (b.on && !p.yt && !p.tt) return false; p.vf = !!b.on; await jset('u:' + uid, p); whoCache.delete(uid); return p; });
+    if (r === null) return json(res, 404, { error: 'Користувача не знайдено' });
+    if (r === false) return json(res, 400, { error: 'Користувач ще не додав YouTube чи TikTok' });
+    return json(res, 200, { ok: true, vf: !!r.vf, bd: bdOf(r) });
+  }
   if (url === '/api/owner/users' && M === 'GET') {
     const bn = await bansSet(), repos = (await jget('repos')) || [], sites = (await jget('sites')) || [], out = [];
-    for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; const oam = p.email ? null : await jget('oam:' + uid), oav = oam ? (oam.prov === 'github' ? 'GitHub' : 'Google') : (p.oa && Object.keys(p.oa)[0] ? (Object.keys(p.oa)[0] === 'github' ? 'GitHub' : 'Google') : ''); out.push({ nick: p.nick, created: p.created, email: p.email || (oav ? oav + ' ✓' : ''), banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
+    for (const uid of ((await jget('uidx')) || []).slice(-500)) { const p = await jget('u:' + uid); if (!p) continue; const oam = p.email ? null : await jget('oam:' + uid), oav = oam ? (oam.prov === 'github' ? 'GitHub' : 'Google') : (p.oa && Object.keys(p.oa)[0] ? (Object.keys(p.oa)[0] === 'github' ? 'GitHub' : 'Google') : ''); out.push({ yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, nick: p.nick, created: p.created, email: p.email || (oav ? oav + ' ✓' : ''), banned: bn.has(uid), repos: repos.filter(r => r.uid === uid).length, sites: sites.filter(s => s.uid === uid).length, ai: p.ai || 0, aiToday: dayUse(uid) }); }
     out.sort((a, b) => b.created - a.created); return json(res, 200, { users: out });
   }
   if ((m = url.match(/^\/api\/owner\/users\/([^/]{1,60})$/)) && M === 'POST') {

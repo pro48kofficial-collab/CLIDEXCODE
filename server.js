@@ -1487,6 +1487,7 @@ function siteOrigin(req) {
 }
 function pwaRoute(req, res, url) {
   if (req.method !== 'GET') return false;
+  if (url === '/googleb32590c9ad897cc0.html' || url === '/google4893c7a24e91942b.html') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('google-site-verification: ' + url.slice(1)); return true; }
   if (url === '/robots.txt') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ' + siteOrigin(req) + '/sitemap.xml\n'); return true; }
   if (url === '/sitemap.xml') { const o = siteOrigin(req); res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>' + o + '/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>\n'); return true; }
   if (url === '/manifest.webmanifest') { res.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' }); res.end(MANIFEST); return true; }

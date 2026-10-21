@@ -604,7 +604,7 @@ function socialNorm(kind, v) { // повертає нормалізоване п
   if (kind === 'yt') { if (host !== 'youtube.com' || !/^\/(@[\w.\-]{2,60}|channel\/[\w\-]{10,40}|c\/[^\/\s]{1,60}|user\/[^\/\s]{1,60})$/.test(path)) return null; return 'https://www.youtube.com' + path; }
   if (host !== 'tiktok.com' || !/^\/@[\w.\-]{2,40}$/.test(path)) return null; return 'https://www.tiktok.com' + path;
 }
-const pubProfile = (p, self) => ({ yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
+const pubProfile = (p, self) => ({ sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -719,6 +719,14 @@ const RANK = { free: 0, pro: 1, plus: 2 };
 const PLUS_MODEL = process.env.GEMINI_PLUS_MODEL || 'gemini-2.5-pro';
 const planOf = w => (w && PLANS[w.p] ? w.p : 'free');
 const FRAMES = ['neon', 'gold', 'aurora', 'fire', 'void'];
+/* магазин прикрас профілю: рамки та банери (не Plus-рамки), ціна від 1500 */
+const DECOR = [
+  { id: 's-ember', k: 'frame', price: 1500, name: 'Жар' }, { id: 's-ocean', k: 'frame', price: 1500, name: 'Океан' }, { id: 's-sakura', k: 'frame', price: 1800, name: 'Сакура' },
+  { id: 's-glitch', k: 'frame', price: 2500, name: 'Глітч', anim: true }, { id: 's-rainbow', k: 'frame', price: 3000, name: 'Веселка', anim: true }, { id: 's-royal', k: 'frame', price: 4000, name: 'Королівська', anim: true },
+  { id: 'b-dusk', k: 'banner', price: 1500, name: 'Сутінки' }, { id: 'b-mint', k: 'banner', price: 1500, name: 'М’ята' }, { id: 'b-night', k: 'banner', price: 1800, name: 'Зоряна ніч' }, { id: 'b-sunset', k: 'banner', price: 2000, name: 'Захід' },
+  { id: 'b-aurora', k: 'banner', price: 3000, name: 'Північне сяйво', anim: true }, { id: 'b-lava', k: 'banner', price: 3500, name: 'Лава', anim: true }, { id: 'b-neon', k: 'banner', price: 4000, name: 'Неонові хвилі', anim: true }, { id: 'b-galaxy', k: 'banner', price: 5000, name: 'Галактика', anim: true }
+];
+const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}; return { ok: true, items: DECOR, inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '' }, coins: own ? null : w.c, inf: !!own }; };
 const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
 const DAILY = [ { c: 50, ai: 0 }, { c: 75, ai: 5 }, { c: 100, ai: 10 }, { c: 125, ai: 0 }, { c: 0, ai: 20 }, { c: 150, ai: 25 }, { c: 200, ai: 0 } ];
 const walletKey = uid => 'w:' + uid;
@@ -741,8 +749,20 @@ async function walletRoute(req, res, url) {
       w.s = next; w.l = today; w.c += r.c + plusB; w.ai += r.ai; await save(); stat('claim');
       return json(res, 200, Object.assign({ ok: true, reward: Object.assign({}, r, { plus: plusB }), day: next }, walletView(w, own)));
     }
+    if (url === '/api/shop/items' && M === 'GET') return json(res, 200, await decorView(w, own, a.uid));
+    if (url === '/api/shop/equip' && M === 'POST') {
+      const b = await body(req, res); if (!b) return; const slot = b.slot === 'frame' ? 'sf' : b.slot === 'banner' ? 'sb' : null; if (!slot) return json(res, 400, { error: 'Невідомий слот' });
+      const id = String(b.id || ''), it = id && DECOR.find(x => x.id === id && x.k === b.slot); if (id && (!it || !(w.inv || []).includes(id))) return json(res, 403, { error: 'Спершу купіть цей предмет' });
+      const p = await jget('u:' + a.uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' }); p[slot] = id; await jset('u:' + a.uid, p); whoCache.delete(a.uid);
+      return json(res, 200, await decorView(w, own, a.uid));
+    }
     if (url === '/api/shop/buy' && M === 'POST') {
       const b = await body(req, res); if (!b) return;
+      { const it = DECOR.find(x => x.id === b.item); if (it) {
+        w.inv = w.inv || []; if (w.inv.includes(it.id)) return json(res, 409, { error: 'Цей предмет уже у вас' });
+        if (!own) { if (w.c < it.price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + it.price }); w.c -= it.price; }
+        w.inv.push(it.id); await save(); stat('decor'); return json(res, 200, await decorView(w, own, a.uid));
+      } }
       if (b.item === 'pro' || b.item === 'plus') {
         const cur = planOf(w), want = b.item;
         if (RANK[cur] >= RANK[want]) return json(res, 409, { error: cur === want ? 'Цей тариф уже у вас' : 'У вас уже вищий тариф' });
@@ -860,7 +880,7 @@ const REPO_MAX = 3 * 1048576;
 const TAGS = ['game', 'landing', 'portfolio', 'shop', 'blog', 'tool', 'template', 'other'];
 const cleanTags = a => (Array.isArray(a) ? a : []).map(String).filter(t => TAGS.includes(t)).filter((t, i, s) => s.indexOf(t) === i).slice(0, 3);
 const WEEK = 7 * 86400e3;
-const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', obd: bdOf(p), opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && p.fr || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
+const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', obd: bdOf(p), opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && (p.sf || p.fr) || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
 async function emailOk(a, res) {
   if ((await getCfg()).requireEmail && !a.p.email && !(a.p.oa && Object.keys(a.p.oa).length) && !(await jget('oam:' + a.uid))) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
   return true;
@@ -1459,8 +1479,16 @@ self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.a
 self.addEventListener('fetch',e=>{const r=e.request,u=new URL(r.url);if(r.method!=='GET'||u.origin!==location.origin)return;
 if(u.pathname==='/'||u.pathname==='/index.html'||u.pathname==='/icon.svg'||u.pathname==='/manifest.webmanifest'){e.respondWith(fetch(r).then(x=>{if(x.ok){const c=x.clone();caches.open(V).then(ch=>ch.put(r,c))}return x}).catch(()=>caches.match(r).then(x=>x||caches.match('/'))))}});`;
 const MANIFEST = JSON.stringify({ name: 'Clidex Editor', short_name: 'Clidex', description: 'Онлайн-редактор коду та конструктор сайтів', start_url: '/', scope: '/', display: 'standalone', background_color: '#0d1117', theme_color: '#0d1117', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }, { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] });
+function siteOrigin(req) {
+  const e = String(process.env.SITE_URL || '').replace(/\/+$/, ''); if (/^https?:\/\/[\w.-]+(:\d+)?$/.test(e)) return e;
+  const hh = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost').split(',')[0].trim().replace(/[^\w.:-]/g, '');
+  const pr = /^https?$/.test(String(req.headers['x-forwarded-proto'] || '')) ? req.headers['x-forwarded-proto'] : (/^(localhost|127\.)/.test(hh) ? 'http' : 'https');
+  return pr + '://' + hh;
+}
 function pwaRoute(req, res, url) {
   if (req.method !== 'GET') return false;
+  if (url === '/robots.txt') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ' + siteOrigin(req) + '/sitemap.xml\n'); return true; }
+  if (url === '/sitemap.xml') { const o = siteOrigin(req); res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>' + o + '/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>\n'); return true; }
   if (url === '/manifest.webmanifest') { res.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' }); res.end(MANIFEST); return true; }
   if (url === '/sw.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }); res.end(SW_JS); return true; }
   if (url === '/icon.svg' || url === '/favicon.ico') { res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' }); res.end(ICON_SVG); return true; }
@@ -1730,6 +1758,33 @@ async function tmDelete(t) {
   await kvDel('tmi:' + t.id + ':a'); await kvDel('tmi:' + t.id + ':b'); await kvDel('tm:' + t.id);
 }
 async function tmAll() { const out = []; for (const id of (await jget('tmidx')) || []) { const t = await jget('tm:' + id); if (t) out.push(t); } return out; }
+/* ---------- квести (бали для команд) ---------- */
+const QUESTS = [{ id: 'shooter1', reward: 500, from: Date.UTC(2026, 9, 31, 22, 0, 0), to: Date.UTC(2026, 10, 30, 21, 59, 59) }]; // 1–30 листопада 2026 (за Києвом)
+const questStatus = q => { const n = Date.now(); return n < q.from ? 'soon' : n > q.to ? 'ended' : 'active'; };
+async function questRoute(req, res, url) {
+  const M = req.method, own = ownerReq(req); let m;
+  if (url === '/api/quests' && M === 'GET') {
+    const out = []; for (const q of QUESTS) { const st = (await jget('quest:' + q.id)) || {}; out.push({ id: q.id, reward: q.reward, from: q.from, to: q.to, status: questStatus(q), winner: st.winner || null }); }
+    return json(res, 200, { quests: out, now: Date.now(), tg: process.env.TG_CHANNEL_URL || '' });
+  }
+  if ((m = url.match(/^\/api\/quests\/([a-z0-9]{1,20})\/(award|revoke)$/)) && M === 'POST') {
+    if (!own) return json(res, 403, { error: 'Лише для власника' }); const q = QUESTS.find(x => x.id === m[1]); if (!q) return json(res, 404, { error: 'Квест не знайдено' });
+    const b = await body(req, res); if (!b) return;
+    return withLock('quest:' + q.id, async () => {
+      const st = (await jget('quest:' + q.id)) || {};
+      if (m[2] === 'award') {
+        if (st.winner) return json(res, 409, { error: 'Переможця вже обрано (#' + st.winner.tag + '). Спершу скасуйте нагороду.' });
+        const tag = String(b.tag || '').trim().replace(/^#/, '').toUpperCase(), id = tag && await kvGet('tg:' + tag), t0 = id && await jget('tm:' + id); if (!t0) return json(res, 404, { error: 'Команду з тегом #' + tag + ' не знайдено' });
+        const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.pts = (t.pts | 0) + q.reward; await jset('tm:' + id, t); return t; });
+        st.winner = { id, tag: r.tag, name: r.name, t: Date.now() }; await jset('quest:' + q.id, st); return json(res, 200, { ok: true, winner: st.winner, pts: r.pts });
+      }
+      if (!st.winner) return json(res, 404, { error: 'Переможця немає' });
+      const t0 = await jget('tm:' + st.winner.id); if (t0) await withLock('tm:' + t0.id, async () => { const t = await jget('tm:' + t0.id); t.pts = Math.max(0, (t.pts | 0) - q.reward); await jset('tm:' + t0.id, t); });
+      delete st.winner; await jset('quest:' + q.id, st); return json(res, 200, { ok: true });
+    });
+  }
+  return json(res, 404, { error: 'Не знайдено' });
+}
 async function teamRoute(req, res, url, u) {
   const M = req.method, own = ownerReq(req); let m;
   const needMe = async () => { const a = await acct(req, res, true); return a || null; };
@@ -1910,11 +1965,13 @@ const server = http.createServer(async (req, res) => {
       } }
     if (!isMainHost(hostH) && !url.startsWith('/api/')) { const ds = await domainSlug(hostH); if (ds) url = '/' + ds + (url === '' ? '/' : url); }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url === '/' || url === '/index.html')) {
-      const st = fs.statSync(INDEX);
-      if (!idxCache || idxCache.m !== st.mtimeMs) { const raw = fs.readFileSync(INDEX); idxCache = { m: st.mtimeMs, raw, gz: zlib.gzipSync(raw, { level: 9 }) }; }
+      const st = fs.statSync(INDEX); const org = siteOrigin(req);
+      if (!idxCache || idxCache.m !== st.mtimeMs) idxCache = { m: st.mtimeMs, base: fs.readFileSync(INDEX, 'utf8'), by: {} };
+      let ent = idxCache.by[org];
+      if (!ent) { if (Object.keys(idxCache.by).length > 20) idxCache.by = {}; const raw = Buffer.from(idxCache.base.split('__ORIGIN__').join(org).split('<meta name="google-site-verification" content="__GSV__">').join(process.env.GOOGLE_SITE_VERIFICATION ? '<meta name="google-site-verification" content="' + String(process.env.GOOGLE_SITE_VERIFICATION).replace(/[^\w-]/g, '') + '">' : ''), 'utf8'); ent = idxCache.by[org] = { raw, gz: zlib.gzipSync(raw, { level: 9 }) }; }
       const gz = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
       res.writeHead(200, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding' }, gz ? { 'Content-Encoding': 'gzip' } : {}));
-      return req.method === 'HEAD' ? res.end() : res.end(gz ? idxCache.gz : idxCache.raw);
+      return req.method === 'HEAD' ? res.end() : res.end(gz ? ent.gz : ent.raw);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
     if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, oauth: OAUTH_ON(), mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
@@ -1929,7 +1986,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -1947,6 +2004,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url.startsWith('/api/quests')) return await questRoute(req, res, url);
       if (url === '/api/teams' || url.startsWith('/api/team')) return await teamRoute(req, res, url, u);
       if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) return await walletRoute(req, res, url);
       if (url === '/api/notifications' && M === 'GET') return await ntList(req, res);

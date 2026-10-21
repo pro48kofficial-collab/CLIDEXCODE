@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: clidex-editor
+    runtime: node
+    plan: free
+    buildCommand: echo "no build"
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # вставте ключ у панелі Render, не в код
+      - key: APP_PASSWORD
+        sync: false          # необов'язково: пароль на ШІ-майстер
+      - key: DATABASE_URL
+        sync: false          # Internal Database URL вашого Render PostgreSQL — тут зберігаються проєкти й сайти
+      # Запасні варіанти замість Postgres: UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, або Render Disk + DATA_DIR=/data
+      - key: RESEND_API_KEY
+        sync: false          # необов'язково: ключ resend.com — для входу/прив'язки акаунта через пошту
+      - key: MAIL_FROM
+        sync: false          # необов'язково: відправник листів, напр. Clidex <noreply@ваш-домен.com>
+      - key: RENDER_API_KEY
+        sync: false          # необов'язково: щоб власні домени самі додавались у Render (Account Settings → API Keys)
+      - key: RENDER_SERVICE_ID
+        sync: false          # необов'язково: id цього сервісу (srv-...), видно в адресі сервісу на Render
+      - key: OWNER_KEY
+        sync: false          # ВАШ секретний ключ власника: з ним у Налаштуваннях вмикається режим власника (видалення чужих сайтів, модерація, панель)
+      - key: POW_BITS
+        value: "14"          # необов'язково: складність захисту від ботів при створенні профілю
+      # Вхід через обліковий запис (необов'язково). Callback-адреса в Google/GitHub: https://ВАШ-САЙТ/api/auth/oauth/callback/google  та  .../github
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      # SEO (необов'язково): ваш основний домен і код підтвердження з Google Search Console
+      - key: SITE_URL
+        sync: false          # напр. https://clidex-editor.onrender.com — щоб canonical/sitemap мали правильну адресу
+      - key: GOOGLE_SITE_VERIFICATION
+        sync: false          # значення content з мета-тега google-site-verification (Search Console → HTML-тег)

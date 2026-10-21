@@ -1704,6 +1704,193 @@ async function apkRoute(req, res) {
   }
 }
 
+/* ---------- команди ---------- */
+const TEAM_PRICE = 200, TEAM_IMG = 160 * 1024;
+const tmImg = (v, max) => { const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(v || '')); return m && Buffer.byteLength(m[2], 'base64') <= max ? { mime: m[1], b64: m[2] } : null; };
+const tmClean = (s, n) => String(s || '').replace(/[<>&"`]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
+async function tmPerson(uid) { const p = await who(uid); return p ? { nick: p.nick, av: p.avatar ? p.av : '', bd: bdOf(p) } : { nick: '?', av: '', bd: '' }; }
+async function tmSummary(t, me) {
+  const mine = !!me && t.m.some(x => x.u === me);
+  return { id: t.id, name: t.name, tag: t.tag, vf: !!t.vf, pts: t.pts | 0, n: t.m.length, iv: t.iv || 0, mine, req: !!me && (t.rq || []).includes(me) };
+}
+async function tmFull(t, me, own) {
+  const s = await tmSummary(t, me), isOwner = !!me && t.o === me, members = [];
+  const canSee = s.mine || own;
+  if (canSee) for (const x of t.m) { const p = await tmPerson(x.u); members.push({ nick: p.nick, av: p.av, bd: p.bd, role: x.r || '', owner: x.u === t.o }); }
+  const out = Object.assign(s, { owner: (await tmPerson(t.o)).nick, created: t.c, isOwner, members });
+  if (isOwner) { out.invite = t.inv; out.reqs = []; for (const u of t.rq || []) out.reqs.push(await tmPerson(u)); }
+  if (own) { out.reqs = []; for (const u of t.rq || []) out.reqs.push(await tmPerson(u)); }
+  return out;
+}
+async function tmDelete(t) {
+  await withLock('tmidx', async () => { const l = ((await jget('tmidx')) || []).filter(x => x !== t.id); await jset('tmidx', l); });
+  for (const x of t.m) await kvDel('tmu:' + x.u);
+  await kvDel('tg:' + t.tag); if (t.inv) await kvDel('tinv:' + t.inv);
+  const ch = await jget('tmc:' + t.id); for (const x of (ch && ch.l) || []) if (x.mid) await kvDel('tmm:' + t.id + ':' + x.mid); await kvDel('tmc:' + t.id);
+  await kvDel('tmi:' + t.id + ':a'); await kvDel('tmi:' + t.id + ':b'); await kvDel('tm:' + t.id);
+}
+async function tmAll() { const out = []; for (const id of (await jget('tmidx')) || []) { const t = await jget('tm:' + id); if (t) out.push(t); } return out; }
+async function teamRoute(req, res, url, u) {
+  const M = req.method, own = ownerReq(req); let m;
+  const needMe = async () => { const a = await acct(req, res, true); return a || null; };
+  // зображення (публічні)
+  if ((m = url.match(/^\/api\/team\/([a-f0-9]{12})\/img\/([ab])$/)) && M === 'GET') {
+    const im = await jget('tmi:' + m[1] + ':' + m[2]); if (!im) { res.writeHead(404); return res.end(); }
+    const buf = Buffer.from(im.b64, 'base64');
+    res.writeHead(200, { 'Content-Type': im.mime, 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' }); return res.end(buf);
+  }
+  if (url === '/api/teams' && M === 'GET') {
+    const me = syncUid(req), q = String(u.searchParams.get('q') || '').trim().toLowerCase(), top = u.searchParams.get('sort') === 'top';
+    let l = await tmAll();
+    if (q) l = l.filter(t => t.tag.toLowerCase().startsWith(q.replace(/^#/, '')) || t.name.toLowerCase().includes(q));
+    l.sort((a, b) => (b.pts | 0) - (a.pts | 0) || b.m.length - a.m.length || a.c - b.c);
+    l = l.slice(0, top ? 50 : 30);
+    return json(res, 200, { teams: await Promise.all(l.map(t => tmSummary(t, me))), price: TEAM_PRICE });
+  }
+  if (url === '/api/team/mine' && M === 'GET') {
+    const a = await needMe(); if (!a) return; const id = await kvGet('tmu:' + a.uid), t = id && await jget('tm:' + id);
+    return json(res, 200, { team: t ? await tmFull(t, a.uid, false) : null, price: TEAM_PRICE });
+  }
+  if (url === '/api/team' && M === 'POST') {
+    const a = await needMe(); if (!a) return; const b = await body(req, res, 700 * 1024); if (!b) return;
+    if (limited(a.uid, 'tmnew', 6)) return json(res, 429, { error: 'Забагато спроб. Спробуйте пізніше.' });
+    const name = tmClean(b.name, 24), tag = String(b.tag || '').trim().toUpperCase();
+    if (name.length < 3) return json(res, 400, { error: 'Назва команди — від 3 символів' });
+    if (!/^[A-Z0-9]{2,5}$/.test(tag)) return json(res, 400, { error: 'Тег — 2–5 латинських літер чи цифр' });
+    const av = tmImg(b.avatar, TEAM_IMG), bn = tmImg(b.banner, TEAM_IMG);
+    if (!av || !bn) return json(res, 400, { error: 'Виберіть аватарку та банер з галереї (до 160 КБ кожне)' });
+    if (await kvGet('tmu:' + a.uid)) return json(res, 400, { error: 'Ви вже в команді. Спершу вийдіть з неї.' });
+    let left = null;
+    if (!own) {
+      const r = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); if (w.c < TEAM_PRICE) return false; w.c -= TEAM_PRICE; await jset(walletKey(a.uid), w); return w.c; });
+      if (r === false) return json(res, 402, { error: 'Для створення команди потрібно ' + TEAM_PRICE + ' коінів' });
+      left = r;
+    }
+    const refund = () => own ? 0 : withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c += TEAM_PRICE; await jset(walletKey(a.uid), w); });
+    const id = crypto.randomBytes(6).toString('hex'), inv = crypto.randomBytes(12).toString('base64url');
+    const ok = await withLock('tag', async () => { if (await kvGet('tg:' + tag)) return false; await kvSet('tg:' + tag, id); return true; });
+    if (!ok) { await refund(); return json(res, 409, { error: 'Тег #' + tag + ' уже зайнятий' }); }
+    try {
+      await jset('tmi:' + id + ':a', av); await jset('tmi:' + id + ':b', bn);
+      const t = { id, name, tag, o: a.uid, c: Date.now(), iv: 1, vf: false, pts: 0, inv, m: [{ u: a.uid, r: '', j: Date.now() }], rq: [] };
+      await jset('tm:' + id, t); await kvSet('tmu:' + a.uid, id); await kvSet('tinv:' + inv, id);
+      await withLock('tmidx', async () => { const l = (await jget('tmidx')) || []; l.push(id); await jset('tmidx', l); });
+      stat('team');
+      return json(res, 200, { ok: true, team: await tmFull(t, a.uid, false), coins: left });
+    } catch (e) { console.error('team', e); await kvDel('tg:' + tag); await refund(); return json(res, 500, { error: 'Не вдалося створити команду. Коіни повернено.' }); }
+  }
+  if ((m = url.match(/^\/api\/team\/invite\/([A-Za-z0-9_-]{8,40})$/)) && M === 'GET') {
+    const id = await kvGet('tinv:' + m[1]), t = id && await jget('tm:' + id); if (!t) return json(res, 404, { error: 'Запрошення недійсне' });
+    return json(res, 200, { team: await tmSummary(t, syncUid(req)) });
+  }
+  if (url === '/api/team/join' && M === 'POST') {
+    const a = await needMe(); if (!a) return; const b = await body(req, res); if (!b) return;
+    const id = await kvGet('tinv:' + String(b.token || '')), t0 = id && await jget('tm:' + id); if (!t0) return json(res, 404, { error: 'Запрошення недійсне' });
+    if (await kvGet('tmu:' + a.uid)) return json(res, 400, { error: 'Ви вже в команді' });
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t) return null; if (t.m.length >= 50) return false; t.m.push({ u: a.uid, r: '', j: Date.now() }); t.rq = (t.rq || []).filter(x => x !== a.uid); await jset('tm:' + id, t); await kvSet('tmu:' + a.uid, id); return t; });
+    if (r === false) return json(res, 400, { error: 'У команді вже 50 учасників' }); if (!r) return json(res, 404, { error: 'Команду не знайдено' });
+    return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  if ((m = url.match(/^\/api\/team\/([a-f0-9]{12})\/m\/([a-f0-9]{16})$/)) && M === 'GET') { // медіа чату: недогадуване посилання
+    const f = await jget('tmm:' + m[1] + ':' + m[2]); if (!f) { res.writeHead(404); return res.end(); }
+    const buf = Buffer.from(f.b64, 'base64');
+    res.writeHead(200, { 'Content-Type': f.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline' }); return res.end(buf);
+  }
+  if ((m = url.match(/^\/api\/team\/([a-f0-9]{12})\/chat(?:\/(\d{1,9}))?$/))) {
+    const id = m[1], tt = await jget('tm:' + id); if (!tt) return json(res, 404, { error: 'Команду не знайдено' });
+    const me = syncUid(req), isMem = !!me && tt.m.some(x => x.u === me);
+    if (!own) { if (!me) return json(res, 400, { error: 'Невірний код акаунта' }); if (!isMem) return json(res, 403, { error: 'Чат лише для учасників команди' }); if (await isBanned(me)) return json(res, 403, { error: 'Акаунт заблоковано модератором' }); }
+    if (!m[2] && M === 'GET') {
+      const after = Math.max(0, parseInt(u.searchParams.get('after') || '0', 10) || 0), ch = (await jget('tmc:' + id)) || { l: [] };
+      let l = ch.l.filter(x => x.n > after); if (!after) l = l.slice(-80);
+      const roles = new Map(tt.m.map(x => [x.u, x.r || '']));
+      const out = []; for (const x of l) { const p = await tmPerson(x.u); out.push({ n: x.n, nick: p.nick, av: p.av, bd: p.bd, role: roles.get(x.u) || '', t: x.t, k: x.k, text: x.text || '', media: x.mid ? new URL('/api/team/' + id + '/m/' + x.mid, 'http://x').pathname : '', mine: x.u === me, owner: x.u === tt.o }); }
+      return json(res, 200, { msgs: out, last: ch.l.length ? ch.l[ch.l.length - 1].n : 0, canDel: own || tt.o === me });
+    }
+    if (!m[2] && M === 'POST') {
+      if (!isMem) return json(res, 403, { error: 'Писати можуть лише учасники' });
+      if (limited(me, 'tmsg', 300)) return json(res, 429, { error: 'Забагато повідомлень. Зачекайте.' });
+      const b = await body(req, res, 6 * 1024 * 1024); if (!b) return;
+      const text = tmClean(String(b.text || '').replace(/\r/g, ''), 500); let mid = '', kind = 'text', mf = null;
+      if (b.media) {
+        const mm = /^data:((?:image\/(?:gif|jpeg|png|webp))|(?:video\/(?:mp4|webm)));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.media));
+        if (!mm) return json(res, 400, { error: 'Підтримуються фото, GIF і відео (mp4/webm)' });
+        const bytes = Buffer.byteLength(mm[2], 'base64'), vid = mm[1].startsWith('video/');
+        if (bytes > (vid ? 4 * 1048576 : 1048576)) return json(res, 400, { error: vid ? 'Відео завелике (макс. 4 МБ)' : 'Зображення завелике (макс. 1 МБ)' });
+        kind = vid ? 'video' : mm[1] === 'image/gif' ? 'gif' : 'img'; mid = crypto.randomBytes(8).toString('hex'); mf = { mime: mm[1], b64: mm[2] };
+      }
+      if (!text && !mf) return json(res, 400, { error: 'Порожнє повідомлення' });
+      if (mf) await jset('tmm:' + id + ':' + mid, mf);
+      const msg = await withLock('tmc:' + id, async () => {
+        const ch = (await jget('tmc:' + id)) || { l: [] }, n = Math.max(ch.seq || 0, ch.l.length ? ch.l[ch.l.length - 1].n : 0) + 1, x = { n, u: me, t: Date.now(), k: kind, text, mid };
+        ch.l.push(x); ch.seq = n; while (ch.l.length > 300) { const d = ch.l.shift(); if (d.mid) await kvDel('tmm:' + id + ':' + d.mid); }
+        await jset('tmc:' + id, ch); return x; });
+      return json(res, 200, { ok: true, n: msg.n });
+    }
+    if (m[2] && M === 'DELETE') {
+      const n = +m[2], r = await withLock('tmc:' + id, async () => {
+        const ch = (await jget('tmc:' + id)) || { l: [] }, x = ch.l.find(y => y.n === n); if (!x) return null;
+        if (!(own || tt.o === me || x.u === me)) return false;
+        ch.l = ch.l.filter(y => y.n !== n); await jset('tmc:' + id, ch); if (x.mid) await kvDel('tmm:' + id + ':' + x.mid); return true; });
+      if (r === null) return json(res, 404, { error: 'Повідомлення не знайдено' }); if (r === false) return json(res, 403, { error: 'Немає прав' });
+      return json(res, 200, { ok: true });
+    }
+    return json(res, 404, { error: 'Не знайдено' });
+  }
+  if (!(m = url.match(/^\/api\/team\/([a-f0-9]{12})(?:\/([a-z]+))?$/))) return json(res, 404, { error: 'Не знайдено' });
+  const id = m[1], act = m[2] || '', t0 = await jget('tm:' + id); if (!t0) return json(res, 404, { error: 'Команду не знайдено' });
+  if (!act && M === 'GET') { const me = syncUid(req); return json(res, 200, { team: await tmFull(t0, me, !!own) }); }
+  if (act === 'admin' && M === 'POST') { // лише власник сайту
+    if (!own) return json(res, 403, { error: 'Лише для власника' }); const b = await body(req, res); if (!b) return;
+    if (b.action === 'delete') { await tmDelete(t0); return json(res, 200, { ok: true }); }
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t) return null;
+      if (b.action === 'verify') t.vf = !!b.on; else if (b.action === 'points') { const n = Math.trunc(+b.amount); if (!Number.isFinite(n) || Math.abs(n) > 1e9) return false; t.pts = Math.max(0, (t.pts | 0) + (b.set ? n - (t.pts | 0) : n)); } else return false;
+      await jset('tm:' + id, t); return t; });
+    if (!r) return json(res, 400, { error: 'Некоректна дія' }); return json(res, 200, { ok: true, team: await tmFull(r, syncUid(req), true) });
+  }
+  const a = await needMe(); if (!a) return;
+  const isOwner = t0.o === a.uid, isMem = t0.m.some(x => x.u === a.uid);
+  if (!act && M === 'DELETE') { if (!isOwner) return json(res, 403, { error: 'Лише власник команди може її видалити' }); await tmDelete(t0); return json(res, 200, { ok: true }); }
+  if (act === 'request' && M === 'POST') {
+    if (isMem || await kvGet('tmu:' + a.uid)) return json(res, 400, { error: 'Ви вже в команді' });
+    if (limited(a.uid, 'tmreq', 20)) return json(res, 429, { error: 'Забагато запитів' });
+    await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.rq = t.rq || []; if (!t.rq.includes(a.uid) && t.rq.length < 100) t.rq.push(a.uid); await jset('tm:' + id, t); });
+    return json(res, 200, { ok: true });
+  }
+  if (act === 'cancel' && M === 'POST') { await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.rq = (t.rq || []).filter(x => x !== a.uid); await jset('tm:' + id, t); }); return json(res, 200, { ok: true }); }
+  if (act === 'leave' && M === 'POST') {
+    if (!isMem) return json(res, 400, { error: 'Ви не в цій команді' }); if (isOwner) return json(res, 400, { error: 'Власник не може вийти — видаліть команду' });
+    await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.m = t.m.filter(x => x.u !== a.uid); await jset('tm:' + id, t); }); await kvDel('tmu:' + a.uid); return json(res, 200, { ok: true });
+  }
+  if (!isOwner) return json(res, 403, { error: 'Лише власник команди' });
+  let b = {}; if (M === 'POST') { let raw = ''; try { raw = await readBody(req, 64 * 1024); b = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); } }
+  const targetUid = async () => { const uid = await kvGet('n:' + String(b.nick || '').trim().toLowerCase()); return uid || null; };
+  if (act === 'resolve' && M === 'POST') {
+    const uid = await targetUid(); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' });
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!(t.rq || []).includes(uid)) return 'none'; t.rq = t.rq.filter(x => x !== uid);
+      if (b.accept) { if (t.m.length >= 50) return 'full'; if (await kvGet('tmu:' + uid)) { await jset('tm:' + id, t); return 'busy'; } t.m.push({ u: uid, r: '', j: Date.now() }); await kvSet('tmu:' + uid, id); }
+      await jset('tm:' + id, t); return t; });
+    if (r === 'none') return json(res, 404, { error: 'Запиту немає' }); if (r === 'full') return json(res, 400, { error: 'У команді вже 50 учасників' }); if (r === 'busy') return json(res, 400, { error: 'Ця людина вже вступила в іншу команду' });
+    return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  if (act === 'role' && M === 'POST') {
+    const uid = await targetUid(); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' }); const role = tmClean(b.role, 16);
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id), x = t.m.find(y => y.u === uid); if (!x) return null; x.r = role; await jset('tm:' + id, t); return t; });
+    if (!r) return json(res, 404, { error: 'Не учасник команди' }); return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  if (act === 'kick' && M === 'POST') {
+    const uid = await targetUid(); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' }); if (uid === t0.o) return json(res, 400, { error: 'Не можна прибрати власника' });
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t.m.some(y => y.u === uid)) return null; t.m = t.m.filter(y => y.u !== uid); await jset('tm:' + id, t); return t; });
+    if (!r) return json(res, 404, { error: 'Не учасник команди' }); await kvDel('tmu:' + uid); return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  if (act === 'invite' && M === 'POST') { // нове посилання (старе перестає діяти)
+    const inv = crypto.randomBytes(12).toString('base64url');
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (t.inv) await kvDel('tinv:' + t.inv); t.inv = inv; await jset('tm:' + id, t); await kvSet('tinv:' + inv, id); return t; });
+    return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  return json(res, 404, { error: 'Не знайдено' });
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = clientIp(req);
   { // захист від перевантаження: короткий ліміт запитів з однієї адреси + тимчасовий бан
@@ -1742,7 +1929,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -1760,6 +1947,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url === '/api/teams' || url.startsWith('/api/team')) return await teamRoute(req, res, url, u);
       if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) return await walletRoute(req, res, url);
       if (url === '/api/notifications' && M === 'GET') return await ntList(req, res);
       if (url === '/api/notifications/read' && M === 'POST') return await ntRead(req, res);

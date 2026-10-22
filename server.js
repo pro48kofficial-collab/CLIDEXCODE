@@ -1379,6 +1379,26 @@ async function ownerRoute(req, res, url, u, ip) {
     const bal = await withLock('w:' + uid, async () => { const w = await walletGet(uid); w.c = Math.max(0, (w.c | 0) + amt); await jset(walletKey(uid), w); return w.c; });
     return json(res, 200, { ok: true, nick: b.nick, balance: bal });
   }
+  if (url === '/api/owner/promos' && M === 'GET') { const l = []; for (const c of (await jget('pcidx')) || []) { const x = await jget('pc:' + c); if (x) l.push({ code: x.code, coins: x.coins, max: x.max, used: x.used, exp: x.exp, off: !!x.off, created: x.created }); } return json(res, 200, { promos: l, now: Date.now() }); }
+  if (url === '/api/owner/promos' && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const code = String(b.code || '').trim().toUpperCase(), max = Math.trunc(+b.max), coins = Math.trunc(+b.coins), exp = b.exp ? Math.trunc(+b.exp) : 0;
+    if (!/^[A-Z0-9_-]{3,32}$/.test(code)) return json(res, 400, { error: 'Назва промокоду: 3–32 символи (літери A–Z, цифри, - та _)' });
+    if (!Number.isFinite(max) || max < 1 || max > 1000000) return json(res, 400, { error: 'Кількість активацій: від 1 до 1 000 000' });
+    if (!Number.isFinite(coins) || coins < 1 || coins > 10000000) return json(res, 400, { error: 'Коїнів за активацію: від 1 до 10 000 000' });
+    if (b.exp && (!Number.isFinite(exp) || exp <= Date.now())) return json(res, 400, { error: 'Дата закінчення має бути в майбутньому' });
+    return withLock('pcidx', async () => {
+      if (await jget('pc:' + code)) return json(res, 409, { error: 'Такий промокод уже існує' });
+      const idx = (await jget('pcidx')) || []; if (idx.length >= 2000) return json(res, 400, { error: 'Забагато промокодів, видаліть старі' });
+      await jset('pc:' + code, { code, coins, max, used: 0, exp, off: false, by: [], created: Date.now() }); idx.push(code); await jset('pcidx', idx);
+      return json(res, 200, { ok: true, code });
+    });
+  }
+  if ((m = url.match(/^\/api\/owner\/promos\/([A-Za-z0-9_-]{3,32})$/)) && (M === 'DELETE' || M === 'POST')) {
+    const code = m[1].toUpperCase();
+    if (M === 'POST') { const b = await body(req, res); if (!b) return; return withLock('pc:' + code, async () => { const x = await jget('pc:' + code); if (!x) return json(res, 404, { error: 'Промокод не знайдено' }); x.off = !!b.off; await jset('pc:' + code, x); return json(res, 200, { ok: true, off: x.off }); }); }
+    return withLock('pcidx', async () => { await kvDel('pc:' + code); await jset('pcidx', (((await jget('pcidx')) || []).filter(c => c !== code))); return json(res, 200, { ok: true }); });
+  }
   if (url === '/api/owner/verify' && M === 'POST') {
     const b = await body(req, res); if (!b) return;
     const uid = await kvGet('n:' + String(b.nick || '').trim().toLowerCase()); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' });
@@ -1761,6 +1781,27 @@ async function tmDelete(t) {
 }
 async function tmAll() { const out = []; for (const id of (await jget('tmidx')) || []) { const t = await jget('tm:' + id); if (t) out.push(t); } return out; }
 /* ---------- квести (бали для команд) ---------- */
+async function promoRoute(req, res, url) {
+  if (url === '/api/promo/redeem' && req.method === 'POST') {
+    const a = await acct(req, res, true); if (!a) return;
+    if (limited(a.uid, 'promo', 10)) return json(res, 429, { error: 'Забагато спроб. Спробуйте за годину.' });
+    const b = await body(req, res); if (!b) return;
+    const code = String(b.code || '').trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,32}$/.test(code)) return json(res, 400, { error: 'Невірний промокод' });
+    const r = await withLock('pc:' + code, async () => {
+      const x = await jget('pc:' + code);
+      if (!x || x.off) return { e: 'Промокод не знайдено' };
+      if (x.exp && Date.now() > x.exp) return { e: 'Термін дії промокоду закінчився' };
+      if (x.used >= x.max) return { e: 'Промокод уже вичерпано' };
+      if (x.by.includes(a.uid)) return { e: 'Ви вже активували цей промокод' };
+      x.used++; x.by.push(a.uid); await jset('pc:' + code, x); return { coins: x.coins };
+    });
+    if (r.e) return json(res, 400, { error: r.e });
+    const bal = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c = (w.c | 0) + r.coins; await jset(walletKey(a.uid), w); return w.c; });
+    return json(res, 200, { ok: true, coins: r.coins, balance: bal });
+  }
+  return json(res, 404, { error: 'Не знайдено' });
+}
 const QUESTS = [{ id: 'shooter1', reward: 500, from: Date.UTC(2026, 9, 31, 22, 0, 0), to: Date.UTC(2026, 10, 30, 21, 59, 59) }]; // 1–30 листопада 2026 (за Києвом)
 const questStatus = q => { const n = Date.now(); return n < q.from ? 'soon' : n > q.to ? 'ended' : 'active'; };
 async function questRoute(req, res, url) {
@@ -1988,7 +2029,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -2006,6 +2047,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url.startsWith('/api/promo')) return await promoRoute(req, res, url);
       if (url.startsWith('/api/quests')) return await questRoute(req, res, url);
       if (url === '/api/teams' || url.startsWith('/api/team')) return await teamRoute(req, res, url, u);
       if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) return await walletRoute(req, res, url);

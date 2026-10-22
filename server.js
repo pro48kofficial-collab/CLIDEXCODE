@@ -1492,8 +1492,9 @@ function pwaRoute(req, res, url) {
   if (url === '/sitemap.xml') { const o = siteOrigin(req); res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }); res.end('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>' + o + '/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>\n'); return true; }
   if (url === '/manifest.webmanifest') { res.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' }); res.end(MANIFEST); return true; }
   if (url === '/sw.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }); res.end(SW_JS); return true; }
-  if (url === '/icon.svg' || url === '/favicon.ico') { res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' }); res.end(ICON_SVG); return true; }
-  const m = url.match(/^\/icon-(192|512)\.png$/); if (m) { const b = iconPng(+m[1]); res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': b.length, 'Cache-Control': 'public, max-age=86400' }); res.end(b); return true; }
+  if (url === '/favicon.ico') { const b = iconPng(48); res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': b.length, 'Cache-Control': 'public, max-age=86400' }); res.end(b); return true; }
+  if (url === '/icon.svg') { res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' }); res.end(ICON_SVG); return true; }
+  const m = url.match(/^\/icon-(48|96|192|512)\.png$/); if (m) { const b = iconPng(+m[1]); res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': b.length, 'Cache-Control': 'public, max-age=86400' }); res.end(b); return true; }
   return false;
 }
 

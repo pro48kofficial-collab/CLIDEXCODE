@@ -654,7 +654,9 @@ async function who(uid) {
   const c = whoCache.get(uid); if (c && Date.now() - c.t < 60000) return c.p;
   const p = await jget('u:' + uid); whoCache.set(uid, { t: Date.now(), p }); if (whoCache.size > 500) whoCache.delete(whoCache.keys().next().value); return p;
 }
-const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') : '';
+const MEDAL_CATS = { follow: { l: 'F', t: [10, 20, 50, 100, 250] }, followers: { l: 'R', t: [10, 20, 50, 100, 250] }, likes: { l: 'L', t: [10, 50, 100, 500, 1000] }, games: { l: 'G', t: [1, 5, 10, 25, 50] } };
+const medalCode = id => { const m = /^(follow|followers|likes|games):([0-4])$/.exec(id); return m ? MEDAL_CATS[m[1]].l + m[2] : ''; };
+const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') : '';
 function socialNorm(kind, v) { // повертає нормалізоване посилання, '' (очистити) або null (некоректне)
   v = String(v == null ? '' : v).trim(); if (!v) return '';
   if (v.length > 200) return null; if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
@@ -665,7 +667,7 @@ function socialNorm(kind, v) { // повертає нормалізоване п
   if (kind === 'yt') { if (host !== 'youtube.com' || !/^\/(@[\w.\-]{2,60}|channel\/[\w\-]{10,40}|c\/[^\/\s]{1,60}|user\/[^\/\s]{1,60})$/.test(path)) return null; return 'https://www.youtube.com' + path; }
   if (host !== 'tiktok.com' || !/^\/@[\w.\-]{2,40}$/.test(path)) return null; return 'https://www.tiktok.com' + path;
 }
-const pubProfile = (p, self) => ({ sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '' });
+const pubProfile = (p, self) => ({ sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '', md: Array.isArray(p.md) ? p.md : [] });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -676,21 +678,36 @@ async function acct(req, res, mustHaveProfile) {
 async function sendMail(to, subject, text) {
   if (!RESEND_KEY) { const e = new Error('mail-off'); e.mailOff = true; throw e; }
   const r = await fetch(RESEND_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + RESEND_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text }) });
-  if (!r.ok) throw new Error('mail-fail ' + r.status);
+  if (!r.ok) {
+    let d = ''; try { d = String((await r.json()).message || '').slice(0, 300); } catch (e) {}
+    lastMailErr = { t: Date.now(), status: r.status, msg: d };
+    const e = new Error('mail-fail ' + r.status + (d ? ': ' + d : '')); throw e;
+  }
+  lastMailErr = null;
 }
+let lastMailErr = null;
 
-async function meGet(req, res) { const a = await acct(req, res); if (!a) return; return json(res, 200, { profile: a.p ? pubProfile(a.p, true) : null }); }
+const verifiedAcct = async (uid, p) => !!(p && (p.email || (p.oa && Object.keys(p.oa).length) || (await jget('oam:' + uid))));
+const isGuest = async (uid, p) => !!(p && p.g && !(await verifiedAcct(uid, p)));
+async function guestBlock(a, res) { if (await isGuest(a.uid, a.p)) { json(res, 403, { error: 'Гостьовий акаунт: підтвердіть пошту або увійдіть через GitHub / Google, щоб відкрити цю функцію', guest: true }); return true; } return false; }
+const selfProfile = async (uid, p) => Object.assign(pubProfile(p, true), { g: await isGuest(uid, p) });
+async function meGet(req, res) { const a = await acct(req, res); if (!a) return; return json(res, 200, { profile: a.p ? await selfProfile(a.uid, a.p) : null }); }
 async function mePut(req, res) {
   const uid = syncUid(req); if (!uid) return json(res, 400, { error: 'Невірний код акаунта' });
   const b = await body(req, res, 220 * 1024); if (!b) return;
   return withLock('nick', async () => {
     let p = await jget('u:' + uid); const isNew = !p;
+    if (isNew && b.guest === true) {
+      if (typeof b.avatar !== 'string' || !b.avatar) return json(res, 400, { error: 'Додайте фото профілю — воно обов’язкове' });
+      if (String(b.bio || '').trim().length < 5) return json(res, 400, { error: 'Напишіть кілька слів про себе (мінімум 5 символів)' });
+    }
     if (isNew) {
       if (limited(ipOf(req), 'reg', 12)) return json(res, 429, { error: 'Забагато нових профілів з цієї адреси. Спробуйте пізніше.' });
       if (!(await powCheck(b.pow))) return json(res, 400, { error: 'Перевірка від ботів не пройдена. Оновіть сторінку й спробуйте ще раз.', pow: true });
       stat('reg');
     }
     p = p || { created: Date.now(), nick: '', avatar: '', bio: '', email: '', av: '' };
+    if (isNew && b.guest === true) p.g = true;
     if (b.nick !== undefined || isNew) {
       let nick = String(b.nick == null ? '' : b.nick).trim();
       if (!nick) { if (p.nick) nick = p.nick; else do { nick = 'user-' + crypto.randomBytes(3).toString('hex'); } while (await kvGet('n:' + nick)); }
@@ -716,7 +733,7 @@ async function mePut(req, res) {
       if (b.fr !== undefined) { const f = String(b.fr); if (f && !FRAMES.includes(f)) return json(res, 400, { error: 'Невідома рамка' }); p.fr = f; }
     }
     await jset('u:' + uid, p); whoCache.delete(uid); await touchUser(uid);
-    return json(res, 200, { profile: pubProfile(p, true), isNew });
+    return json(res, 200, { profile: await selfProfile(uid, p), isNew });
   });
 }
 async function avatarGet(req, res, nick) {
@@ -739,7 +756,7 @@ async function emailStart(req, res, ip) {
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
   await jset('ec:' + emailKey(email), { h: sha('ec:' + code), exp: Date.now() + 600000, tries: 0, mode, uid: uid || '' });
   try { await sendMail(email, 'Код входу Clidex Editor', 'Ваш код: ' + code + '\nДіє 10 хвилин. Якщо це були не ви — просто проігноруйте лист.'); }
-  catch (e) { console.error('mail:', e.message); return json(res, 502, { error: 'Не вдалося надіслати лист' }); }
+  catch (e) { console.error('mail:', e.message); return json(res, 502, { error: 'Не вдалося надіслати лист. Спробуйте ще раз пізніше або скористайтесь входом через Google / GitHub, якщо він доступний.' }); }
   return json(res, 200, { ok: true });
 }
 async function emailVerify(req, res) {
@@ -800,6 +817,7 @@ const walletView = (w, own) => {
 async function walletRoute(req, res, url) {
   const a = await acct(req, res, true); if (!a) return;
   const own = ownerReq(req), M = req.method;
+  if (!own && M !== 'GET' && await guestBlock(a, res)) return;
   return withLock('w:' + a.uid, async () => {
     const w = await walletGet(a.uid), today = kday(), save = () => jset(walletKey(a.uid), w);
     if (url === '/api/wallet' && M === 'GET') return json(res, 200, walletView(w, own));
@@ -943,6 +961,7 @@ const cleanTags = a => (Array.isArray(a) ? a : []).map(String).filter(t => TAGS.
 const WEEK = 7 * 86400e3;
 const repoOut = async (m, me, ls) => { const p = await who(m.uid); return { id: m.id, name: m.name, desc: m.desc, owner: p ? p.nick : '?', av: p && p.avatar ? p.av : '', obd: bdOf(p), opl: p && p.pl || 'free', onc: p && p.nc || '', ofr: p && (p.sf || p.fr) || '', updated: m.updated, likes: m.likes || 0, forks: m.forks || 0, site: m.site || '', files: m.n, size: m.size, liked: !!(me && ls && ls.includes(short(me))), vis: m.vis || 'public', tags: m.tags || [], cc: m.cc || 0, hidden: !!m.hidden, week: (m.lt || []).filter(t => Date.now() - t < WEEK).length }; };
 async function emailOk(a, res) {
+  if (await guestBlock(a, res)) return false;
   if ((await getCfg()).requireEmail && !a.p.email && !(a.p.oa && Object.keys(a.p.oa).length) && !(await jget('oam:' + a.uid))) { json(res, 403, { error: 'Для цієї дії підтвердіть пошту в профілі' }); return false; }
   return true;
 }
@@ -960,7 +979,7 @@ async function repoPut(req, res, pid) {
     const vis = ['public', 'link', 'private'].includes(b.vis) ? b.vis : (old && old.vis) || 'public';
     if (vis === 'public' && !(await emailOk(a, res))) return;
     const m = { id, uid: a.uid, name: String(b.name || 'Без назви').slice(0, 60), desc: String(b.desc || '').slice(0, 300), updated: Date.now(), created: old ? old.created : Date.now(), likes: old ? old.likes : 0, forks: old ? old.forks : 0, site: /^[a-z0-9-]{1,80}$/.test(b.site || '') && String(b.site).startsWith(PREFIX) ? b.site : '', n: keys.length, size,
-      vis, tags: b.tags !== undefined ? cleanTags(b.tags) : (old && old.tags) || [], lt: old ? old.lt || [] : [], cc: old ? old.cc || 0 : 0, hidden: old ? !!old.hidden : false };
+      vis, tags: b.tags !== undefined ? cleanTags(b.tags) : (old && old.tags) || [], game: isGameFiles(f), lt: old ? old.lt || [] : [], cc: old ? old.cc || 0 : 0, hidden: old ? !!old.hidden : false };
     await jset('repo:' + id, { files: f });
     const out = idx.filter(x => x.id !== id); out.unshift(m); await jset('repos', out.slice(0, 3000));
     return json(res, 200, { id, repo: await repoOut(m, a.uid, null) });
@@ -1407,7 +1426,7 @@ async function ownerRoute(req, res, url, u, ip) {
     await flushStats(); const days = []; for (let i = 0; i < 7; i++) { const d = new Date(Date.now() - i * 86400e3).toISOString().slice(0, 10); days.push(Object.assign({ day: d }, (await jget('st:' + d)) || {})); }
     await reindexSites().catch(() => {});
     const sites = (await jget('sites')) || [], repos = (await jget('repos')) || [], rep = (await jget('rep')) || [], bks = (await jget('bks')) || [];
-    return json(res, 200, { users: ((await jget('uidx')) || []).length, sites: sites.length, sitesPublic: sites.filter(s => s.vis === 'public').length, repos: repos.length, posts: ((await jget('feed')) || []).length, reports: rep.filter(r => r.status === 'open').length, rooms: rooms.size, days, storage: { kind: B.kind, durable: B.durable }, backups: bks, cfg: await getCfg(), keyMissing: !KEY });
+    return json(res, 200, { mail: { on: !!RESEND_KEY, from: MAIL_FROM, err: lastMailErr }, users: ((await jget('uidx')) || []).length, sites: sites.length, sitesPublic: sites.filter(s => s.vis === 'public').length, repos: repos.length, posts: ((await jget('feed')) || []).length, reports: rep.filter(r => r.status === 'open').length, rooms: rooms.size, days, storage: { kind: B.kind, durable: B.durable }, backups: bks, cfg: await getCfg(), keyMissing: !KEY });
   }
   if (url === '/api/owner/sites' && M === 'GET') {
     await reindexSites().catch(e => console.error('reindex:', e.message));
@@ -1780,6 +1799,7 @@ async function apkLib(url) {
 }
 async function apkRoute(req, res) {
   const a = await acct(req, res, true); if (!a) return;
+  if (!ownerReq(req) && await guestBlock(a, res)) return;
   if (limited(a.uid, 'apk', 20)) return json(res, 429, { error: 'Забагато збірок за годину. Спробуйте пізніше.' });
   let b; try { b = JSON.parse(await readBody(req, 40 * 1024 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит або проєкт завеликий (макс. 40 МБ)' }); }
   const html = String(b.html || ''); if (html.length < 20) return json(res, 400, { error: 'Порожній проєкт' });
@@ -1845,6 +1865,7 @@ async function tmAll() { const out = []; for (const id of (await jget('tmidx')) 
 async function promoRoute(req, res, url) {
   if (url === '/api/promo/redeem' && req.method === 'POST') {
     const a = await acct(req, res, true); if (!a) return;
+    if (await guestBlock(a, res)) return;
     if (limited(a.uid, 'promo', 10)) return json(res, 429, { error: 'Забагато спроб. Спробуйте за годину.' });
     const b = await body(req, res); if (!b) return;
     const code = String(b.code || '').trim().toUpperCase();
@@ -1860,6 +1881,43 @@ async function promoRoute(req, res, url) {
     if (r.e) return json(res, 400, { error: r.e });
     const bal = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c = (w.c | 0) + r.coins; await jset(walletKey(a.uid), w); return w.c; });
     return json(res, 200, { ok: true, coins: r.coins, balance: bal });
+  }
+  return json(res, 404, { error: 'Не знайдено' });
+}
+/* ---------------- медалі ---------------- */
+const MEDAL_TIERS = ['bronze', 'silver', 'gold', 'platinum', 'diamond'];
+function isGameFiles(f) {
+  if (!f || typeof f !== 'object') return false;
+  if (f['scene.js'] !== undefined && f['engine.js'] !== undefined) return true;
+  const t = Object.keys(f).filter(k => /\.(html?|js)$/i.test(k)).map(k => String(f[k]).slice(0, 200000)).join('\n');
+  return /Clidex\.(room|leaderboard)|Clx3\./.test(t) || (/<canvas|requestAnimationFrame/.test(t) && /keydown|keyup|touchstart|pointerdown|mousedown|score|game/i.test(t));
+}
+async function medalStats(uid) {
+  const fw = (await jget('fw:' + uid)) || [], fr = (await jget('fr:' + uid)) || [];
+  const repos = ((await jget('repos')) || []).filter(r => r.uid === uid && !r.hidden);
+  let likes = repos.reduce((n, r) => n + (r.likes | 0), 0);
+  likes += ((await jget('feed')) || []).filter(x => x.uid === uid).reduce((n, x) => n + (Array.isArray(x.likes) ? x.likes.length : 0), 0);
+  let games = 0;
+  for (const r of repos.slice(0, 80)) { let g = r.game; if (g === undefined) { const d = await jget('repo:' + r.id); g = isGameFiles(d && d.files); } if (g) games++; }
+  return { follow: fw.length, followers: fr.length, likes, games };
+}
+async function medalRoute(req, res, url) {
+  const a = await acct(req, res, true); if (!a) return;
+  const M = req.method;
+  const st = await medalStats(a.uid), earned = new Set();
+  const cats = Object.keys(MEDAL_CATS).map(id => ({ id, value: st[id], tiers: MEDAL_CATS[id].t.map((need, i) => { const ok = st[id] >= need; if (ok) earned.add(id + ':' + i); return { id: id + ':' + i, need, tier: MEDAL_TIERS[i], earned: ok }; }) }));
+  if (url === '/api/medals' && M === 'GET') {
+    const cur = Array.isArray(a.p.md) ? a.p.md : [], keep = cur.filter(x => earned.has(x));
+    if (keep.length !== cur.length) { await withLock('nick', async () => { const p = await jget('u:' + a.uid); if (p) { p.md = keep; await jset('u:' + a.uid, p); whoCache.delete(a.uid); } }); }
+    return json(res, 200, { cats, worn: keep, max: 3 });
+  }
+  if (url === '/api/medals/wear' && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const w = Array.isArray(b.worn) ? b.worn.map(String) : null;
+    if (!w || w.length > 3 || new Set(w).size !== w.length) return json(res, 400, { error: 'Можна одягнути до трьох різних медалей' });
+    if (w.some(x => !earned.has(x))) return json(res, 403, { error: 'Цю медаль ще не здобуто' });
+    await withLock('nick', async () => { const p = await jget('u:' + a.uid); p.md = w; await jset('u:' + a.uid, p); whoCache.delete(a.uid); });
+    return json(res, 200, { ok: true, worn: w });
   }
   return json(res, 404, { error: 'Не знайдено' });
 }
@@ -1891,7 +1949,7 @@ async function questRoute(req, res, url) {
 }
 async function teamRoute(req, res, url, u) {
   const M = req.method, own = ownerReq(req); let m;
-  const needMe = async () => { const a = await acct(req, res, true); return a || null; };
+  const needMe = async () => { const a = await acct(req, res, true); if (!a) return null; if (!own && M !== 'GET' && await guestBlock(a, res)) return null; return a; };
   // зображення (публічні)
   if ((m = url.match(/^\/api\/team\/([a-f0-9]{12})\/img\/([ab])$/)) && M === 'GET') {
     const im = await jget('tmi:' + m[1] + ':' + m[2]); if (!im) { res.writeHead(404); return res.end(); }
@@ -2090,7 +2148,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -2108,6 +2166,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url.startsWith('/api/medals')) return await medalRoute(req, res, url);
       if (url.startsWith('/api/promo')) return await promoRoute(req, res, url);
       if (url.startsWith('/api/quests')) return await questRoute(req, res, url);
       if (url === '/api/teams' || url.startsWith('/api/team')) return await teamRoute(req, res, url, u);

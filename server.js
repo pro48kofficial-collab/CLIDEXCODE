@@ -687,7 +687,8 @@ async function sendMail(to, subject, text) {
 }
 let lastMailErr = null;
 
-const verifiedAcct = async (uid, p) => !!(p && (p.email || (p.oa && Object.keys(p.oa).length) || (await jget('oam:' + uid))));
+const UNLOCK_PRICE = 500;
+const verifiedAcct = async (uid, p) => !!(p && (p.ul || p.email || (p.oa && Object.keys(p.oa).length) || (await jget('oam:' + uid))));
 const isGuest = async (uid, p) => !!(p && p.g && !(await verifiedAcct(uid, p)));
 async function guestBlock(a, res) { if (await isGuest(a.uid, a.p)) { json(res, 403, { error: 'Гостьовий акаунт: підтвердіть пошту або увійдіть через GitHub / Google, щоб відкрити цю функцію', guest: true }); return true; } return false; }
 const selfProfile = async (uid, p) => Object.assign(pubProfile(p, true), { g: await isGuest(uid, p) });
@@ -812,12 +813,12 @@ const walletGet = async uid => Object.assign({ c: 0, s: 0, l: '', ai: 0, u: { d:
 const walletView = (w, own) => {
   const today = kday(); let next = w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s + 1 : 1);
   const used = w.u.d === today ? w.u.n : 0, ads = w.ad.d === today ? w.ad.n : 0;
-  const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites, doms: PLANS.pro.doms, suf: PLANS.pro.suf }, plus: { price: PLANS.plus.price, sites: 'inf', doms: PLANS.plus.doms, suf: PLANS.plus.suf, daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK };
+  const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites, doms: PLANS.pro.doms, suf: PLANS.pro.suf }, plus: { price: PLANS.plus.price, sites: 'inf', doms: PLANS.plus.doms, suf: PLANS.plus.suf, daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK, unlock: UNLOCK_PRICE };
 };
 async function walletRoute(req, res, url) {
   const a = await acct(req, res, true); if (!a) return;
   const own = ownerReq(req), M = req.method;
-  if (!own && M !== 'GET' && await guestBlock(a, res)) return;
+  if (!own && M !== 'GET' && url !== '/api/wallet/claim' && url !== '/api/shop/unlock' && await guestBlock(a, res)) return;
   return withLock('w:' + a.uid, async () => {
     const w = await walletGet(a.uid), today = kday(), save = () => jset(walletKey(a.uid), w);
     if (url === '/api/wallet' && M === 'GET') return json(res, 200, walletView(w, own));
@@ -834,6 +835,13 @@ async function walletRoute(req, res, url) {
       const id = String(b.id || ''), it = id && DECOR.find(x => x.id === id && x.k === b.slot); if (id && (!it || !(w.inv || []).includes(id))) return json(res, 403, { error: 'Спершу купіть цей предмет' });
       const p = await jget('u:' + a.uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' }); p[slot] = id; await jset('u:' + a.uid, p); whoCache.delete(a.uid);
       return json(res, 200, await decorView(w, own, a.uid));
+    }
+    if (url === '/api/shop/unlock' && M === 'POST') {
+      const p = await jget('u:' + a.uid);
+      if (!(await isGuest(a.uid, p))) return json(res, 409, { error: 'Усі функції вже відкрито' });
+      if (!own) { if (w.c < UNLOCK_PRICE) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + UNLOCK_PRICE }); w.c -= UNLOCK_PRICE; }
+      p.ul = true; await jset('u:' + a.uid, p); whoCache.delete(a.uid); await save(); stat('unlock');
+      return json(res, 200, Object.assign({ ok: true, unlocked: true }, walletView(w, own)));
     }
     if (url === '/api/shop/buy' && M === 'POST') {
       const b = await body(req, res); if (!b) return;

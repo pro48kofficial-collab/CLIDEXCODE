@@ -656,7 +656,8 @@ async function who(uid) {
 }
 const MEDAL_CATS = { follow: { l: 'F', t: [10, 20, 50, 100, 250] }, followers: { l: 'R', t: [10, 20, 50, 100, 250] }, likes: { l: 'L', t: [10, 50, 100, 500, 1000] }, games: { l: 'G', t: [1, 5, 10, 25, 50] } };
 const medalCode = id => { const m = /^(follow|followers|likes|games):([0-4])$/.exec(id); return m ? MEDAL_CATS[m[1]].l + m[2] : ''; };
-const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') : '';
+const FIGS = ['g-knight', 'g-crown', 'g-wizard', 'g-robot', 'g-dragon', 'g-astro'];
+const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') + (p.sg && FIGS.includes(p.sg) ? '^' + FIGS.indexOf(p.sg) : '') : '';
 function socialNorm(kind, v) { // повертає нормалізоване посилання, '' (очистити) або null (некоректне)
   v = String(v == null ? '' : v).trim(); if (!v) return '';
   if (v.length > 200) return null; if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
@@ -667,7 +668,7 @@ function socialNorm(kind, v) { // повертає нормалізоване п
   if (kind === 'yt') { if (host !== 'youtube.com' || !/^\/(@[\w.\-]{2,60}|channel\/[\w\-]{10,40}|c\/[^\/\s]{1,60}|user\/[^\/\s]{1,60})$/.test(path)) return null; return 'https://www.youtube.com' + path; }
   if (host !== 'tiktok.com' || !/^\/@[\w.\-]{2,40}$/.test(path)) return null; return 'https://www.tiktok.com' + path;
 }
-const pubProfile = (p, self) => ({ sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '', md: Array.isArray(p.md) ? p.md : [] });
+const pubProfile = (p, self) => ({ sg: p.sg || '', sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '', md: Array.isArray(p.md) ? p.md : [] });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -802,10 +803,12 @@ const FRAMES = ['neon', 'gold', 'aurora', 'fire', 'void'];
 const DECOR = [
   { id: 's-ember', k: 'frame', price: 1500, name: 'Жар' }, { id: 's-ocean', k: 'frame', price: 1500, name: 'Океан' }, { id: 's-sakura', k: 'frame', price: 1800, name: 'Сакура' },
   { id: 's-glitch', k: 'frame', price: 2500, name: 'Глітч', anim: true }, { id: 's-rainbow', k: 'frame', price: 3000, name: 'Веселка', anim: true }, { id: 's-royal', k: 'frame', price: 4000, name: 'Королівська', anim: true },
+  { id: 'g-knight', k: 'figure', price: 1000, name: 'Шолом лицаря' }, { id: 'g-crown', k: 'figure', price: 1500, name: 'Золота корона' }, { id: 'g-wizard', k: 'figure', price: 1500, name: 'Капелюх чарівника' },
+  { id: 'g-robot', k: 'figure', price: 2000, name: 'Робот', anim: true }, { id: 'g-dragon', k: 'figure', price: 2500, name: 'Дракончик', anim: true }, { id: 'g-astro', k: 'figure', price: 3000, name: 'Космонавт', anim: true },
   { id: 'b-dusk', k: 'banner', price: 1500, name: 'Сутінки' }, { id: 'b-mint', k: 'banner', price: 1500, name: 'М’ята' }, { id: 'b-night', k: 'banner', price: 1800, name: 'Зоряна ніч' }, { id: 'b-sunset', k: 'banner', price: 2000, name: 'Захід' },
   { id: 'b-aurora', k: 'banner', price: 3000, name: 'Північне сяйво', anim: true }, { id: 'b-lava', k: 'banner', price: 3500, name: 'Лава', anim: true }, { id: 'b-neon', k: 'banner', price: 4000, name: 'Неонові хвилі', anim: true }, { id: 'b-galaxy', k: 'banner', price: 5000, name: 'Галактика', anim: true }
 ];
-const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}; return { ok: true, items: DECOR, inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '' }, coins: own ? null : w.c, inf: !!own }; };
+const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}; return { ok: true, items: DECOR, inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '', figure: p.sg || '' }, coins: own ? null : w.c, inf: !!own }; };
 const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
 const DAILY = [ { c: 50, ai: 0 }, { c: 75, ai: 5 }, { c: 100, ai: 10 }, { c: 125, ai: 0 }, { c: 0, ai: 20 }, { c: 150, ai: 25 }, { c: 200, ai: 0 } ];
 const walletKey = uid => 'w:' + uid;
@@ -831,7 +834,7 @@ async function walletRoute(req, res, url) {
     }
     if (url === '/api/shop/items' && M === 'GET') return json(res, 200, await decorView(w, own, a.uid));
     if (url === '/api/shop/equip' && M === 'POST') {
-      const b = await body(req, res); if (!b) return; const slot = b.slot === 'frame' ? 'sf' : b.slot === 'banner' ? 'sb' : null; if (!slot) return json(res, 400, { error: 'Невідомий слот' });
+      const b = await body(req, res); if (!b) return; const slot = b.slot === 'frame' ? 'sf' : b.slot === 'banner' ? 'sb' : b.slot === 'figure' ? 'sg' : null; if (!slot) return json(res, 400, { error: 'Невідомий слот' });
       const id = String(b.id || ''), it = id && DECOR.find(x => x.id === id && x.k === b.slot); if (id && (!it || !(w.inv || []).includes(id))) return json(res, 403, { error: 'Спершу купіть цей предмет' });
       const p = await jget('u:' + a.uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' }); p[slot] = id; await jset('u:' + a.uid, p); whoCache.delete(a.uid);
       return json(res, 200, await decorView(w, own, a.uid));

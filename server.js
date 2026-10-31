@@ -818,6 +818,60 @@ const walletView = (w, own) => {
   const used = w.u.d === today ? w.u.n : 0, ads = w.ad.d === today ? w.ad.n : 0;
   const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites, doms: PLANS.pro.doms, suf: PLANS.pro.suf }, plus: { price: PLANS.plus.price, sites: 'inf', doms: PLANS.plus.doms, suf: PLANS.plus.suf, daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK, unlock: UNLOCK_PRICE };
 };
+
+/* ===== Marketplace ===== */
+const rid8 = () => crypto.randomBytes(5).toString('hex');
+const MK_CATS = ['site', 'game', 'model', 'ui', 'plugin', 'script', 'font'], MK_FEE = 0.2, MK_MAX = 300 * 1024;
+const mkPub = async (m, uid, bought) => { const p = await who(m.uid); return { id: m.id, title: m.title, desc: m.desc, cat: m.cat, price: m.price, kind: m.kind, size: m.size, sales: m.sales || 0, created: m.created, owner: p ? p.nick : '?', oav: p && p.avatar ? p.av : '', mine: m.uid === uid, bought: !!bought || m.uid === uid || m.price === 0 }; };
+async function marketRoute(req, res, url, u) {
+  const a = await acct(req, res, true); if (!a) return;
+  const own = ownerReq(req), M = req.method, am0 = url.match(/^\/api\/market\/([a-z0-9]{6,20})(\/buy|\/get)?$/);
+  if (M !== 'GET' && !own && !(await emailOk(a, res))) return;
+  if (url === '/api/market' && M === 'GET') {
+    const cat = u.searchParams.get('cat') || '', q = (u.searchParams.get('q') || '').toLowerCase().slice(0, 40), mine = u.searchParams.get('mine') === '1', ids = (await jget('mk:idx')) || [], bt = (await jget('mkb:' + a.uid)) || [], out = [];
+    for (const id of ids) { const m = await jget('mk:' + id); if (!m) continue; if (mine && m.uid !== a.uid) continue; if (!mine && cat && m.cat !== cat) continue; if (q && !(m.title + ' ' + m.desc).toLowerCase().includes(q)) continue; out.push(await mkPub(m, a.uid, bt.includes(id))); if (out.length >= 60) break; }
+    return json(res, 200, { items: out, cats: MK_CATS, fee: MK_FEE });
+  }
+  if (url === '/api/market' && M === 'POST') {
+    if (limited(a.uid, 'mkpub', 20)) return json(res, 429, { error: 'Забагато публікацій за годину' });
+    const b = await body(req, res, MK_MAX + 20000); if (!b) return;
+    const title = String(b.title || '').trim().slice(0, 60), desc = String(b.desc || '').trim().slice(0, 400), cat = String(b.cat || ''), price = Math.round(+b.price), data = typeof b.data === 'string' ? b.data : '', kind = String(b.kind || 'text').slice(0, 20);
+    if (title.length < 3) return json(res, 400, { error: 'Назва — мінімум 3 символи' });
+    if (!MK_CATS.includes(cat)) return json(res, 400, { error: 'Невідома категорія' });
+    if (!(price >= 0 && price <= 50000)) return json(res, 400, { error: 'Ціна від 0 до 50000 коінів' });
+    if (!data || data.length > MK_MAX) return json(res, 400, { error: 'Файл ресурсу порожній або завеликий (макс. 300 КБ)' });
+    const id = rid8(), m = { id, uid: a.uid, title, desc, cat, price, kind, data, size: data.length, created: Date.now(), sales: 0 };
+    await withLock('mk', async () => { const ids = (await jget('mk:idx')) || []; ids.unshift(id); await jset('mk:idx', ids.slice(0, 3000)); await jset('mk:' + id, m); });
+    stat('mkpub'); return json(res, 200, { ok: true, item: await mkPub(m, a.uid, true) });
+  }
+  if (am0 && M === 'DELETE' && !am0[2]) {
+    const m = await jget('mk:' + am0[1]); if (!m) return json(res, 404, { error: 'Не знайдено' });
+    if (m.uid !== a.uid && !own) return json(res, 403, { error: 'Це не ваш ресурс' });
+    await withLock('mk', async () => { const ids = ((await jget('mk:idx')) || []).filter(x => x !== m.id); await jset('mk:idx', ids); await kvDel('mk:' + m.id); });
+    return json(res, 200, { ok: true });
+  }
+  if (am0 && am0[2] === '/buy' && M === 'POST') {
+    const m = await jget('mk:' + am0[1]); if (!m) return json(res, 404, { error: 'Не знайдено' });
+    if (m.uid === a.uid) return json(res, 409, { error: 'Це ваш власний ресурс' });
+    const bt = (await jget('mkb:' + a.uid)) || []; if (bt.includes(m.id)) return json(res, 409, { error: 'Ви вже отримали цей ресурс' });
+    let left = null;
+    if (m.price > 0) {
+      const ok = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); if (!own) { if (w.c < m.price) return false; w.c -= m.price; } await jset(walletKey(a.uid), w); left = own ? null : w.c; return true; });
+      if (!ok) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + m.price });
+      if (!own) { const cut = Math.floor(m.price * (1 - MK_FEE)); await withLock('w:' + m.uid, async () => { const sw = await walletGet(m.uid); sw.c += cut; await jset(walletKey(m.uid), sw); }); }
+    }
+    await withLock('mkb:' + a.uid, async () => { const l = (await jget('mkb:' + a.uid)) || []; if (!l.includes(m.id)) l.push(m.id); await jset('mkb:' + a.uid, l); });
+    await withLock('mk', async () => { const mm = await jget('mk:' + m.id); if (mm) { mm.sales = (mm.sales || 0) + 1; await jset('mk:' + m.id, mm); } });
+    stat('mkbuy'); return json(res, 200, { ok: true, coins: left, inf: own });
+  }
+  if (am0 && am0[2] === '/get' && M === 'GET') {
+    const m = await jget('mk:' + am0[1]); if (!m) return json(res, 404, { error: 'Не знайдено' });
+    const bt = (await jget('mkb:' + a.uid)) || [];
+    if (!(m.price === 0 || m.uid === a.uid || own || bt.includes(m.id))) return json(res, 402, { error: 'Спочатку придбайте ресурс' });
+    return json(res, 200, { ok: true, title: m.title, cat: m.cat, kind: m.kind, data: m.data });
+  }
+  return json(res, 404, { error: 'Не знайдено' });
+}
 async function walletRoute(req, res, url) {
   const a = await acct(req, res, true); if (!a) return;
   const own = ownerReq(req), M = req.method;
@@ -2159,7 +2213,7 @@ const server = http.createServer(async (req, res) => {
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -2177,6 +2231,7 @@ const server = http.createServer(async (req, res) => {
       if ((am = url.match(/^\/api\/repos\/([a-z0-9-]{3,40})\/(like|fork)$/)) && M === 'POST') return am[2] === 'like' ? await repoLike(req, res, am[1]) : await repoFork(req, res, am[1]);
       if (url === '/api/pow' && M === 'GET') return await powGet(req, res);
       if (url === '/api/sites' && M === 'GET') return await sitesCatalog(req, res, u);
+      if (url.startsWith('/api/market')) return await marketRoute(req, res, url, u);
       if (url.startsWith('/api/medals')) return await medalRoute(req, res, url);
       if (url.startsWith('/api/promo')) return await promoRoute(req, res, url);
       if (url.startsWith('/api/quests')) return await questRoute(req, res, url);

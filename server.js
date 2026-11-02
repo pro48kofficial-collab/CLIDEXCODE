@@ -821,15 +821,15 @@ const walletView = (w, own) => {
 
 /* ===== Marketplace ===== */
 const rid8 = () => crypto.randomBytes(5).toString('hex');
-const MK_CATS = ['site', 'game', 'model', 'ui', 'plugin', 'script', 'font'], MK_FEE = 0.2, MK_MAX = 300 * 1024;
+const MK_CATS = ['site', 'game', 'model', 'ui', 'plugin', 'script', 'font'], MK_FEE = 0.2, MK_MAX = 1536 * 1024;
 const mkPub = async (m, uid, bought) => { const p = await who(m.uid); return { id: m.id, title: m.title, desc: m.desc, cat: m.cat, price: m.price, kind: m.kind, size: m.size, sales: m.sales || 0, created: m.created, owner: p ? p.nick : '?', oav: p && p.avatar ? p.av : '', mine: m.uid === uid, bought: !!bought || m.uid === uid || m.price === 0 }; };
 async function marketRoute(req, res, url, u) {
   const a = await acct(req, res, true); if (!a) return;
   const own = ownerReq(req), M = req.method, am0 = url.match(/^\/api\/market\/([a-z0-9]{6,20})(\/buy|\/get)?$/);
   if (M !== 'GET' && !own && !(await emailOk(a, res))) return;
   if (url === '/api/market' && M === 'GET') {
-    const cat = u.searchParams.get('cat') || '', q = (u.searchParams.get('q') || '').toLowerCase().slice(0, 40), mine = u.searchParams.get('mine') === '1', ids = (await jget('mk:idx')) || [], bt = (await jget('mkb:' + a.uid)) || [], out = [];
-    for (const id of ids) { const m = await jget('mk:' + id); if (!m) continue; if (mine && m.uid !== a.uid) continue; if (!mine && cat && m.cat !== cat) continue; if (q && !(m.title + ' ' + m.desc).toLowerCase().includes(q)) continue; out.push(await mkPub(m, a.uid, bt.includes(id))); if (out.length >= 60) break; }
+    const cat = u.searchParams.get('cat') || '', q = (u.searchParams.get('q') || '').toLowerCase().slice(0, 40), mine = u.searchParams.get('mine') === '1', onlyBought = u.searchParams.get('bought') === '1', ids = (await jget('mk:idx')) || [], bt = (await jget('mkb:' + a.uid)) || [], out = [];
+    for (const id of ids) { const m = await jget('mk:' + id); if (!m) continue; if (mine && m.uid !== a.uid) continue; if (onlyBought && !bt.includes(id)) continue; if (!mine && cat && m.cat !== cat) continue; if (q && !(m.title + ' ' + m.desc).toLowerCase().includes(q)) continue; out.push(await mkPub(m, a.uid, bt.includes(id))); if (out.length >= 60) break; }
     return json(res, 200, { items: out, cats: MK_CATS, fee: MK_FEE });
   }
   if (url === '/api/market' && M === 'POST') {
@@ -839,7 +839,7 @@ async function marketRoute(req, res, url, u) {
     if (title.length < 3) return json(res, 400, { error: 'Назва — мінімум 3 символи' });
     if (!MK_CATS.includes(cat)) return json(res, 400, { error: 'Невідома категорія' });
     if (!(price >= 0 && price <= 50000)) return json(res, 400, { error: 'Ціна від 0 до 50000 коінів' });
-    if (!data || data.length > MK_MAX) return json(res, 400, { error: 'Файл ресурсу порожній або завеликий (макс. 300 КБ)' });
+    if (!data || data.length > MK_MAX) return json(res, 400, { error: 'Файл ресурсу порожній або завеликий (макс. 1.5 МБ)' });
     const id = rid8(), m = { id, uid: a.uid, title, desc, cat, price, kind, data, size: data.length, created: Date.now(), sales: 0 };
     await withLock('mk', async () => { const ids = (await jget('mk:idx')) || []; ids.unshift(id); await jset('mk:idx', ids.slice(0, 3000)); await jset('mk:' + id, m); });
     stat('mkpub'); return json(res, 200, { ok: true, item: await mkPub(m, a.uid, true) });
@@ -868,7 +868,7 @@ async function marketRoute(req, res, url, u) {
     const m = await jget('mk:' + am0[1]); if (!m) return json(res, 404, { error: 'Не знайдено' });
     const bt = (await jget('mkb:' + a.uid)) || [];
     if (!(m.price === 0 || m.uid === a.uid || own || bt.includes(m.id))) return json(res, 402, { error: 'Спочатку придбайте ресурс' });
-    return json(res, 200, { ok: true, title: m.title, cat: m.cat, kind: m.kind, data: m.data });
+    return json(res, 200, { ok: true, title: m.title, desc: m.desc, cat: m.cat, kind: m.kind, size: m.size, data: m.data });
   }
   return json(res, 404, { error: 'Не знайдено' });
 }

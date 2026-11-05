@@ -1850,7 +1850,67 @@ function buildApk(o) {
   if (o.icon) base.push({ name: 'resources.arsc', data: buildArsc(o.pkg, 'res/drawable/icon.png'), store: true }, { name: 'res/drawable/icon.png', data: o.icon });
   return zipBuild([...base, ...signApk(base, o.identity)]);
 }
-return { buildApk, makeIdentity, buildManifest, buildArsc, zipBuild, crc32 };
+
+/* ---------- Android App Bundle (.aab) для Google Play ---------- */
+const pv = n => { const o = []; n = Number(n); while (n > 127) { o.push((n % 128) | 128); n = Math.floor(n / 128); } o.push(n); return Buffer.from(o); };
+const pTag = (f, w) => pv(f * 8 + w);
+const pVar = (f, n) => Buffer.concat([pTag(f, 0), pv(n)]);
+const pLen = (f, b) => { b = Buffer.isBuffer(b) ? b : Buffer.from(b, 'utf8'); return Buffer.concat([pTag(f, 2), pv(b.length), b]); };
+const pMsg = (f, ...parts) => pLen(f, Buffer.concat(parts));
+function protoAttr(a) {   // aapt.pb.XmlAttribute
+  const parts = [];
+  if (a.ns) parts.push(pLen(1, NS));
+  parts.push(pLen(2, a.name));
+  let value, item = null;
+  if (a.t === 's') value = a.v;
+  else if (a.t === 'i') { value = String(a.v); item = pMsg(7, pVar(6, a.v >>> 0)); }
+  else if (a.t === 'h') { value = '0x' + (a.v >>> 0).toString(16); item = pMsg(7, pVar(7, a.v >>> 0)); }
+  else if (a.t === 'b') { value = a.v ? 'true' : 'false'; item = pMsg(7, pVar(8, a.v ? 1 : 0)); }
+  else if (a.t === 'r') { value = a.ref; item = pMsg(1, pVar(2, a.v), pLen(3, a.rname || '')); }
+  parts.push(pLen(3, value));
+  if (a.ns && RID[a.name]) parts.push(pVar(5, RID[a.name]));
+  if (item) parts.push(pLen(6, item));
+  return pMsg(4, ...parts);
+}
+function protoEl(n, root) {   // aapt.pb.XmlNode(element)
+  const parts = [];
+  if (root) parts.push(pMsg(1, pLen(1, 'android'), pLen(2, NS)));
+  if (n.ns) parts.push(pLen(2, NS));
+  parts.push(pLen(3, n.tag));
+  (n.attrs || []).slice().sort((a, b) => ((a.ns && RID[a.name]) || 0) - ((b.ns && RID[b.name]) || 0)).forEach(a => parts.push(protoAttr(a)));
+  (n.kids || []).forEach(k => parts.push(pLen(5, protoEl(k))));
+  return pMsg(1, ...parts);
+}
+function buildProtoManifest(o) {
+  const A = (name, t, v, extra) => Object.assign({ name, t, v, ns: true }, extra || {});
+  const act = { tag: 'activity', attrs: [A('theme', 'r', 0x01030007, { ref: '@android:style/Theme.NoTitleBar.Fullscreen', rname: 'android:style/Theme.NoTitleBar.Fullscreen' }), A('label', 's', o.title), A('name', 's', 'com.clidex.game.MainActivity'), A('exported', 'b', true), A('configChanges', 'h', 0xfb0), A('screenOrientation', 'i', o.orient)],
+    kids: [{ tag: 'intent-filter', kids: [{ tag: 'action', attrs: [A('name', 's', 'android.intent.action.MAIN')] }, { tag: 'category', attrs: [A('name', 's', 'android.intent.category.LAUNCHER')] }] }] };
+  const root = { tag: 'manifest', attrs: [A('versionCode', 'i', o.code), A('versionName', 's', o.vname), { name: 'package', t: 's', v: o.pkg, ns: false }], kids: [
+    { tag: 'uses-sdk', attrs: [A('minSdkVersion', 'i', 23), A('targetSdkVersion', 'i', 36)] },
+    { tag: 'uses-permission', attrs: [A('name', 's', 'android.permission.INTERNET')] },
+    { tag: 'application', attrs: [A('label', 's', o.title), A('hardwareAccelerated', 'b', true), A('icon', 'r', 0x7f010000, { ref: '@drawable/icon', rname: 'drawable/icon' })], kids: [act] }] };
+  return protoEl(root, true);
+}
+function buildProtoResources(pkg, path) {   // resources.pb: 0x7f010000 = drawable/icon -> PNG
+  const file = pMsg(5, pLen(1, path), pVar(2, 1)), value = pMsg(4, pMsg(4, file) /* Value.item */);
+  const cfgVal = pMsg(6, pMsg(1), pMsg(2, pMsg(4, file)));
+  const entry = pMsg(3, pMsg(1, pVar(1, 0)), pLen(2, 'icon'), pMsg(3, pVar(3, 2)), cfgVal);
+  const type = pMsg(3, pMsg(1, pVar(1, 1)), pLen(2, 'drawable'), entry);
+  const pk = pMsg(2, pMsg(1, pVar(1, 0x7f)), pLen(2, pkg), type);
+  return pk;
+}
+function buildAab(o) {
+  // o: {title,pkg,code,vname,orient,dex,assets,icon,identity}
+  const base = [
+    { name: 'BundleConfig.pb', data: pMsg(1, pLen(2, '1.18.1')) },
+    { name: 'base/manifest/AndroidManifest.xml', data: buildProtoManifest(o) },
+    { name: 'base/dex/classes.dex', data: o.dex },
+    { name: 'base/resources.pb', data: buildProtoResources(o.pkg, 'res/drawable/icon.png') },
+    { name: 'base/res/drawable/icon.png', data: o.icon },
+    ...o.assets.map(a => ({ name: 'base/assets/' + a.name, data: a.data }))];
+  return zipBuild([...base, ...signApk(base, o.identity)]);
+}
+return { buildApk, buildAab, makeIdentity, buildManifest, buildArsc, zipBuild, crc32 };
 
 })();
 const APK_DEX = Buffer.from('ZGV4CjAzNQBaCvpURymOOHJnnzO4sP9MXhlDua1jg3YQBgAAcAAAAHhWNBIAAAAAAAAAAIgFAAAhAAAAcAAAAAwAAAD0AAAACgAAACQBAAAAAAAAAAAAABMAAACcAQAAAQAAADQCAAC8AwAAVAIAAD4DAABGAwAASQMAAEwDAABkAwAAfwMAAJQDAACpAwAAwAMAAN4DAAD4AwAAGAQAACwEAAAvBAAAMwQAADcEAAA7BAAAPgQAAEgEAABqBAAAeAQAAIUEAACQBAAAmQQAAKMEAAC3BAAA1wQAAPwEAAAQBQAAIAUAADYFAABMBQAAcQUAAAEAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAJAAAACgAAAAsAAAAMAAAAEAAAAAIAAAAEAAAAAAAAAAIAAAAFAAAAAAAAAAIAAAAGAAAAAAAAAAwAAAAKAAAAAAAAAA0AAAAKAAAAVAIAAA4AAAAKAAAAXAIAAA4AAAAKAAAAZAIAAA4AAAAKAAAAbAIAAA4AAAAKAAAAdAIAAA8AAAAKAAAAfAIAAAEAAwAAAAAAAQABABUAAAABAAYAFwAAAAEABwAcAAAABAAEACAAAAAFAAQAEQAAAAUAAAATAAAABgAJABgAAAAGAAkAGQAAAAYACQAaAAAABgAJAB0AAAAGAAkAHgAAAAYACQAfAAAABwAFAAAAAAAHAAIAFAAAAAcACAAWAAAABwAEABsAAAAIAAMAAAAAAAgABgAXAAAACAAAAAEAAAABAAAAAAAAAP////8AAAAAMAMAAAAAAAABAAAAAAAAAAEAAAACAAAAAQAAAAMAAAABAAAABAAAAAEAAAAJAAAAAQAAAAsAAAABAAEAAQAAAAAAAAAEAAAAcBAAAAAADgAHAAIAAgAAAAAAAABBAAAAbyACAGUAbhABAAUADAETA4AAbiAFADEAbhAGAAEADAETAwYXbiAEADEAIgAHAHAgDQBQABISEgRuEA4AAAAMAW4gCwAhAG4gCgAhAG4gBwAhAG4gCAAhAG4gCQAhAG4gDABBABQDAAAA/24gEAAwABoDEgBuIA8AMABuIAMABQAOAAAAAAABARGBgASEBRIBnAUGPGluaXQ+AAFJAAFMABZMYW5kcm9pZC9hcHAvQWN0aXZpdHk7ABlMYW5kcm9pZC9jb250ZW50L0NvbnRleHQ7ABNMYW5kcm9pZC9vcy9CdW5kbGU7ABNMYW5kcm9pZC92aWV3L1ZpZXc7ABVMYW5kcm9pZC92aWV3L1dpbmRvdzsAHExhbmRyb2lkL3dlYmtpdC9XZWJTZXR0aW5nczsAGExhbmRyb2lkL3dlYmtpdC9XZWJWaWV3OwAeTGNvbS9jbGlkZXgvZ2FtZS9NYWluQWN0aXZpdHk7ABJMamF2YS9sYW5nL1N0cmluZzsAAVYAAlZJAAJWTAACVloAAVoACGFkZEZsYWdzACBmaWxlOi8vL2FuZHJvaWRfYXNzZXQvaW5kZXguaHRtbAAMZ2V0RGVjb3JWaWV3AAtnZXRTZXR0aW5ncwAJZ2V0V2luZG93AAdsb2FkVXJsAAhvbkNyZWF0ZQASc2V0QWxsb3dGaWxlQWNjZXNzAB5zZXRBbGxvd0ZpbGVBY2Nlc3NGcm9tRmlsZVVSTHMAI3NldEFsbG93VW5pdmVyc2FsQWNjZXNzRnJvbUZpbGVVUkxzABJzZXRCYWNrZ3JvdW5kQ29sb3IADnNldENvbnRlbnRWaWV3ABRzZXREb21TdG9yYWdlRW5hYmxlZAAUc2V0SmF2YVNjcmlwdEVuYWJsZWQAI3NldE1lZGlhUGxheWJhY2tSZXF1aXJlc1VzZXJHZXN0dXJlABVzZXRTeXN0ZW1VaVZpc2liaWxpdHkACwAAAAAAAAABAAAAAAAAAAEAAAAhAAAAcAAAAAIAAAAMAAAA9AAAAAMAAAAKAAAAJAEAAAUAAAATAAAAnAEAAAYAAAABAAAANAIAAAEQAAAGAAAAVAIAAAEgAAACAAAAhAIAAAAgAAABAAAAMAMAAAIgAAAhAAAAPgMAAAAQAAABAAAAiAUAAA==', 'base64');
@@ -1869,7 +1929,8 @@ async function apkRoute(req, res) {
   let b; try { b = JSON.parse(await readBody(req, 40 * 1024 * 1024)); } catch (e) { return json(res, 400, { error: 'Некоректний запит або проєкт завеликий (макс. 40 МБ)' }); }
   const html = String(b.html || ''); if (html.length < 20) return json(res, 400, { error: 'Порожній проєкт' });
   const title = (String(b.title || 'Game').replace(/[<>&"]/g, '').trim() || 'Game').slice(0, 40), appId = String(b.app || 'app').slice(0, 80);
-  const orient = { landscape: 6, portrait: 7, auto: -1 }[b.orient] ?? -1;
+  const orient = { landscape: 6, portrait: 7, auto: -1 }[b.orient] ?? -1, isAab = b.format === 'aab';
+  let customPkg = ''; if (isAab && b.pkg) { customPkg = String(b.pkg).trim().toLowerCase(); if (!/^[a-z][a-z0-9_]{1,24}(\.[a-z][a-z0-9_]{1,24}){1,3}$/.test(customPkg) || /^com\.(android|google)\./.test(customPkg)) return json(res, 400, { error: 'Некоректна назва пакета. Приклад: com.mystudio.mygame (малі латинські літери, цифри, _; мінімум дві частини)' }); }
   const rawTitle = String(b.title || '').replace(/[<>&"]/g, '').trim(); if (rawTitle.length < 2) return json(res, 400, { error: 'Введіть назву застосунку' });
   const im = /^data:image\/png;base64,([A-Za-z0-9+\/=]+)$/.exec(String(b.icon || '')); const iconBuf = im ? Buffer.from(im[1], 'base64') : null;
   if (!iconBuf || iconBuf.length < 100 || iconBuf.length > 400 * 1024 || iconBuf.readUInt32BE(0) !== 0x89504e47) return json(res, 400, { error: 'Виберіть іконку з галереї (PNG до 400 КБ)' });
@@ -1889,14 +1950,20 @@ async function apkRoute(req, res) {
     let id = await jget('apkid:' + a.uid); if (!id) { id = APKGEN.makeIdentity('Clidex Game ' + a.uid.slice(0, 8)); await jset('apkid:' + a.uid, id); }
     const vkey = 'apkv:' + a.uid + ':' + sha(appId).slice(0, 16);
     const ver = await withLock('apkv:' + a.uid, async () => { const v = (await jget(vkey)) || { n: 0 }; v.n++; await jset(vkey, v); return v.n; });
-    const pkg = 'com.clidex.g' + sha(a.uid + ':' + appId).slice(0, 10);
+    const pkg = customPkg || 'com.clidex.g' + sha(a.uid + ':' + appId).slice(0, 10);
+    if (isAab) {
+      const aab = APKGEN.buildAab({ icon: iconBuf, title, pkg, code: ver, vname: '1.' + ver, orient, dex: APK_DEX, assets, identity: id });
+      stat('aab');
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': aab.length, 'Cache-Control': 'no-store', 'X-Apk-Version': String(ver), 'X-Apk-Package': pkg, 'X-Coins-Left': left == null ? '' : String(left), 'Access-Control-Expose-Headers': 'X-Apk-Version, X-Apk-Package, X-Coins-Left' });
+      return res.end(aab);
+    }
     const apk = APKGEN.buildApk({ icon: iconBuf, title, pkg, code: ver, vname: '1.' + ver, orient, dex: APK_DEX, assets, identity: id });
     stat('apk');
     res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apk.length, 'Cache-Control': 'no-store', 'X-Apk-Version': String(ver), 'X-Apk-Package': pkg, 'X-Coins-Left': left == null ? '' : String(left), 'Access-Control-Expose-Headers': 'X-Apk-Version, X-Apk-Package, X-Coins-Left' });
     return res.end(apk);
   } catch (e) {
     console.error('apk:', e); await refund();
-    return json(res, 500, { error: 'Не вдалося зібрати APK: ' + String(e.message || e).slice(0, 140) + '. Коіни повернено.' });
+    return json(res, 500, { error: 'Не вдалося зібрати файл: ' + String(e.message || e).slice(0, 140) + '. Коіни повернено.' });
   }
 }
 

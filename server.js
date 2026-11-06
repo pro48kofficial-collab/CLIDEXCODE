@@ -657,7 +657,7 @@ async function who(uid) {
 const MEDAL_CATS = { follow: { l: 'F', t: [10, 20, 50, 100, 250] }, followers: { l: 'R', t: [10, 20, 50, 100, 250] }, likes: { l: 'L', t: [10, 50, 100, 500, 1000] }, games: { l: 'G', t: [1, 5, 10, 25, 50] } };
 const medalCode = id => { const m = /^(follow|followers|likes|games):([0-4])$/.exec(id); return m ? MEDAL_CATS[m[1]].l + m[2] : ''; };
 const FIGS = ['g-knight', 'g-crown', 'g-wizard', 'g-robot', 'g-dragon', 'g-astro'];
-const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') + (p.sg && FIGS.includes(p.sg) ? '^' + FIGS.indexOf(p.sg) : '') : '';
+const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') + (p.sg && FIGS.includes(p.sg) ? '^' + FIGS.indexOf(p.sg) : '') + (p.tb && Number.isInteger(p.tb.i) && p.tb.i >= 0 && p.tb.i < 4 ? '#' + p.tb.i : '') : '';
 function socialNorm(kind, v) { // повертає нормалізоване посилання, '' (очистити) або null (некоректне)
   v = String(v == null ? '' : v).trim(); if (!v) return '';
   if (v.length > 200) return null; if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
@@ -668,7 +668,7 @@ function socialNorm(kind, v) { // повертає нормалізоване п
   if (kind === 'yt') { if (host !== 'youtube.com' || !/^\/(@[\w.\-]{2,60}|channel\/[\w\-]{10,40}|c\/[^\/\s]{1,60}|user\/[^\/\s]{1,60})$/.test(path)) return null; return 'https://www.youtube.com' + path; }
   if (host !== 'tiktok.com' || !/^\/@[\w.\-]{2,40}$/.test(path)) return null; return 'https://www.tiktok.com' + path;
 }
-const pubProfile = (p, self) => ({ sg: p.sg || '', sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '', md: Array.isArray(p.md) ? p.md : [] });
+const pubProfile = (p, self) => ({ sg: p.sg || '', sf: p.sf || '', sb: p.sb || '', yt: p.yt || '', tt: p.tt || '', vf: !!p.vf, bd: bdOf(p), tb: p.tb || null, nick: p.nick, bio: p.bio || '', avatar: !!p.avatar, av: p.av || '', created: p.created, email: self ? (p.email || '') : undefined, nm: self ? !!p.nm : undefined, pl: p.pl || 'free', nc: p.nc || '', fr: p.fr || '', md: Array.isArray(p.md) ? p.md : [] });
 async function acct(req, res, mustHaveProfile) {
   const uid = syncUid(req); if (!uid) return need(res, 400, 'Невірний код акаунта');
   const p = await jget('u:' + uid);
@@ -806,7 +806,11 @@ const DECOR = [
   { id: 'g-knight', k: 'figure', price: 1000, name: 'Шолом лицаря' }, { id: 'g-crown', k: 'figure', price: 1500, name: 'Золота корона' }, { id: 'g-wizard', k: 'figure', price: 1500, name: 'Капелюх чарівника' },
   { id: 'g-robot', k: 'figure', price: 2000, name: 'Робот', anim: true }, { id: 'g-dragon', k: 'figure', price: 2500, name: 'Дракончик', anim: true }, { id: 'g-astro', k: 'figure', price: 3000, name: 'Космонавт', anim: true },
   { id: 'b-dusk', k: 'banner', price: 1500, name: 'Сутінки' }, { id: 'b-mint', k: 'banner', price: 1500, name: 'М’ята' }, { id: 'b-night', k: 'banner', price: 1800, name: 'Зоряна ніч' }, { id: 'b-sunset', k: 'banner', price: 2000, name: 'Захід' },
-  { id: 'b-aurora', k: 'banner', price: 3000, name: 'Північне сяйво', anim: true }, { id: 'b-lava', k: 'banner', price: 3500, name: 'Лава', anim: true }, { id: 'b-neon', k: 'banner', price: 4000, name: 'Неонові хвилі', anim: true }, { id: 'b-galaxy', k: 'banner', price: 5000, name: 'Галактика', anim: true }
+  { id: 'b-aurora', k: 'banner', price: 3000, name: 'Північне сяйво', anim: true }, { id: 'b-lava', k: 'banner', price: 3500, name: 'Лава', anim: true }, { id: 'b-neon', k: 'banner', price: 4000, name: 'Неонові хвилі', anim: true }, { id: 'b-galaxy', k: 'banner', price: 5000, name: 'Галактика', anim: true },
+  { id: 'b-rose', k: 'banner', price: 1500, name: 'Рожевий туман' }, { id: 'b-deep', k: 'banner', price: 1500, name: 'Глибина' }, { id: 'b-candy', k: 'banner', price: 1500, name: 'Цукерка' },
+  { id: 'b-forest', k: 'banner', price: 1800, name: 'Ліс' }, { id: 'b-ice', k: 'banner', price: 2000, name: 'Крига' }, { id: 'b-cyber', k: 'banner', price: 2000, name: 'Кіберсітка' },
+  { id: 'b-plasma', k: 'banner', price: 3000, name: 'Плазма', anim: true }, { id: 'b-matrix', k: 'banner', price: 3500, name: 'Матриця', anim: true }, { id: 'b-storm', k: 'banner', price: 4000, name: 'Гроза', anim: true },
+  { id: 'b-gold', k: 'banner', price: 4500, name: 'Золоте сяйво', anim: true }, { id: 'b-prism', k: 'banner', price: 5000, name: 'Призма', anim: true }, { id: 'b-inferno', k: 'banner', price: 5500, name: 'Вогняний шторм', anim: true }
 ];
 const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}; return { ok: true, items: DECOR, inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '', figure: p.sg || '' }, coins: own ? null : w.c, inf: !!own }; };
 const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
@@ -1972,22 +1976,32 @@ const TEAM_PRICE = 200, TEAM_IMG = 160 * 1024;
 const tmImg = (v, max) => { const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(v || '')); return m && Buffer.byteLength(m[2], 'base64') <= max ? { mime: m[1], b64: m[2] } : null; };
 const tmClean = (s, n) => String(s || '').replace(/[<>&"`]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
 async function tmPerson(uid) { const p = await who(uid); return p ? { nick: p.nick, av: p.avatar ? p.av : '', bd: bdOf(p) } : { nick: '?', av: '', bd: '' }; }
+/* ---------- бусти спільнот ---------- */
+const TM_BOOST_COINS = 500, TM_BOOST_PTS = 200, TM_LV = [1, 3, 7, 14];
+const tmLv = t => TM_LV.filter(n => (t.bo | 0) >= n).length;
+const TM_FR = [{ id: 'tf1', lv: 1, name: 'Бронза' }, { id: 'tf2', lv: 2, name: 'Неон' }, { id: 'tf3', lv: 3, name: 'Золото' }, { id: 'tf4', lv: 4, name: 'Діамант', anim: true }];
+const TM_BD = [{ lv: 1, name: 'Бустер' }, { lv: 2, name: 'Сяйво' }, { lv: 3, name: 'Корона' }, { lv: 4, name: 'Діамант' }];
+const wallLv = d => !d.anim ? 1 : d.price <= 3500 ? 2 : 3;
+const TM_WALLS = DECOR.filter(d => d.k === 'banner').map(d => ({ id: d.id, name: d.name, lv: wallLv(d), anim: !!d.anim }));
+async function tbClear(uid) { const p = await jget('u:' + uid); if (p && p.tb) { delete p.tb; await jset('u:' + uid, p); whoCache.delete(uid); } }
 async function tmSummary(t, me) {
   const mine = !!me && t.m.some(x => x.u === me);
-  return { id: t.id, name: t.name, tag: t.tag, vf: !!t.vf, pts: t.pts | 0, n: t.m.length, iv: t.iv || 0, mine, req: !!me && (t.rq || []).includes(me) };
+  return { id: t.id, name: t.name, tag: t.tag, vf: !!t.vf, pts: t.pts | 0, n: t.m.length, iv: t.iv || 0, mine, req: !!me && (t.rq || []).includes(me), bo: t.bo | 0, lv: tmLv(t), fr: t.fr || '', wp: t.wp || '' };
 }
 async function tmFull(t, me, own) {
   const s = await tmSummary(t, me), isOwner = !!me && t.o === me, members = [];
   const canSee = s.mine || own;
   if (canSee) for (const x of t.m) { const p = await tmPerson(x.u); members.push({ nick: p.nick, av: p.av, bd: p.bd, role: x.r || '', owner: x.u === t.o }); }
   const out = Object.assign(s, { owner: (await tmPerson(t.o)).nick, created: t.c, isOwner, members });
+  out.nx = TM_LV[s.lv] || 0; out.rw = { lv: TM_LV, fr: TM_FR, bd: TM_BD, walls: TM_WALLS, coins: TM_BOOST_COINS, pts: TM_BOOST_PTS };
+  out.bl = []; for (const x of (t.bl || []).slice(-5).reverse()) out.bl.push({ nick: (await tmPerson(x.u)).nick, h: x.h, t: x.t });
   if (isOwner) { out.invite = t.inv; out.reqs = []; for (const u of t.rq || []) out.reqs.push(await tmPerson(u)); }
   if (own) { out.reqs = []; for (const u of t.rq || []) out.reqs.push(await tmPerson(u)); }
   return out;
 }
 async function tmDelete(t) {
   await withLock('tmidx', async () => { const l = ((await jget('tmidx')) || []).filter(x => x !== t.id); await jset('tmidx', l); });
-  for (const x of t.m) await kvDel('tmu:' + x.u);
+  for (const x of t.m) { await kvDel('tmu:' + x.u); await tbClear(x.u); }
   await kvDel('tg:' + t.tag); if (t.inv) await kvDel('tinv:' + t.inv);
   const ch = await jget('tmc:' + t.id); for (const x of (ch && ch.l) || []) if (x.mid) await kvDel('tmm:' + t.id + ':' + x.mid); await kvDel('tmc:' + t.id);
   await kvDel('tmi:' + t.id + ':a'); await kvDel('tmi:' + t.id + ':b'); await kvDel('tm:' + t.id);
@@ -2209,7 +2223,35 @@ async function teamRoute(req, res, url, u) {
   if (act === 'cancel' && M === 'POST') { await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.rq = (t.rq || []).filter(x => x !== a.uid); await jset('tm:' + id, t); }); return json(res, 200, { ok: true }); }
   if (act === 'leave' && M === 'POST') {
     if (!isMem) return json(res, 400, { error: 'Ви не в цій команді' }); if (isOwner) return json(res, 400, { error: 'Власник не може вийти — видаліть команду' });
-    await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.m = t.m.filter(x => x.u !== a.uid); await jset('tm:' + id, t); }); await kvDel('tmu:' + a.uid); return json(res, 200, { ok: true });
+    await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); t.m = t.m.filter(x => x.u !== a.uid); await jset('tm:' + id, t); }); await kvDel('tmu:' + a.uid); await tbClear(a.uid); return json(res, 200, { ok: true });
+  }
+  if ((act === 'boost' || act === 'badge') && M === 'POST') {
+    let b = {}; try { const raw = await readBody(req, 4096); b = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
+    if (act === 'badge') {
+      if (!isMem) return json(res, 403, { error: 'Значок доступний лише учасникам команди' });
+      const i = b.i === -1 || b.i === null || b.i === undefined ? -1 : b.i; if (!Number.isInteger(i) || i < -1 || i > 3) return json(res, 400, { error: 'Невідомий значок' });
+      const t = await jget('tm:' + id); if (i >= 0 && tmLv(t) < TM_BD[i].lv) return json(res, 403, { error: 'Значок відкриється на рівні ' + TM_BD[i].lv });
+      const p = await jget('u:' + a.uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' });
+      if (i < 0) delete p.tb; else p.tb = { i, tag: t.tag }; await jset('u:' + a.uid, p); whoCache.delete(a.uid);
+      return json(res, 200, { ok: true, tb: p.tb || null, bd: bdOf(p) });
+    }
+    if (!isMem && !own) return json(res, 403, { error: 'Бустити можуть лише учасники команди' });
+    const how = b.how === 'points' ? 'points' : 'coins';
+    if (how === 'points' && !isOwner && !own) return json(res, 403, { error: 'Бали команди може витрачати лише її власник' });
+    if (limited(a.uid, 'tmboost', 30)) return json(res, 429, { error: 'Забагато спроб. Спробуйте пізніше.' });
+    let left = null;
+    if (how === 'coins' && !own) {
+      const r = await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); if (w.c < TM_BOOST_COINS) return false; w.c -= TM_BOOST_COINS; await jset(walletKey(a.uid), w); return w.c; });
+      if (r === false) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + TM_BOOST_COINS }); left = r;
+    }
+    const lv0 = tmLv(t0);
+    const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t) return null;
+      if (how === 'points') { if ((t.pts | 0) < TM_BOOST_PTS) return false; t.pts = (t.pts | 0) - TM_BOOST_PTS; }
+      t.bo = (t.bo | 0) + 1; t.bl = (t.bl || []).concat([{ u: a.uid, h: how === 'points' ? 'p' : 'c', t: Date.now() }]).slice(-30); await jset('tm:' + id, t); return t; });
+    if (!r) { if (how === 'coins' && !own) await withLock('w:' + a.uid, async () => { const w = await walletGet(a.uid); w.c += TM_BOOST_COINS; await jset(walletKey(a.uid), w); });
+      return r === false ? json(res, 400, { error: 'У команді недостатньо балів: потрібно ' + TM_BOOST_PTS }) : json(res, 404, { error: 'Команду не знайдено' }); }
+    stat('boost');
+    return json(res, 200, { ok: true, lvUp: tmLv(r) > lv0, coins: left, team: await tmFull(r, a.uid, !!own) });
   }
   if (!isOwner) return json(res, 403, { error: 'Лише власник команди' });
   let b = {}; if (M === 'POST') { let raw = ''; try { raw = await readBody(req, 64 * 1024); b = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); } }
@@ -2230,7 +2272,14 @@ async function teamRoute(req, res, url, u) {
   if (act === 'kick' && M === 'POST') {
     const uid = await targetUid(); if (!uid) return json(res, 404, { error: 'Користувача не знайдено' }); if (uid === t0.o) return json(res, 400, { error: 'Не можна прибрати власника' });
     const r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t.m.some(y => y.u === uid)) return null; t.m = t.m.filter(y => y.u !== uid); await jset('tm:' + id, t); return t; });
-    if (!r) return json(res, 404, { error: 'Не учасник команди' }); await kvDel('tmu:' + uid); return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+    if (!r) return json(res, 404, { error: 'Не учасник команди' }); await kvDel('tmu:' + uid); await tbClear(uid); return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
+  }
+  if (act === 'decor' && M === 'POST') {
+    const lv = tmLv(t0), r = await withLock('tm:' + id, async () => { const t = await jget('tm:' + id); if (!t) return null;
+      if (b.frame !== undefined) { const f = String(b.frame || ''); if (f) { const d = TM_FR.find(x => x.id === f); if (!d || d.lv > lv) return false; } t.fr = f; }
+      if (b.wall !== undefined) { const wl = String(b.wall || ''); if (wl) { const d = TM_WALLS.find(x => x.id === wl); if (!d || d.lv > lv) return false; } t.wp = wl; }
+      await jset('tm:' + id, t); return t; });
+    if (!r) return json(res, 403, { error: 'Ця прикраса ще заблокована — потрібен вищий рівень' }); return json(res, 200, { ok: true, team: await tmFull(r, a.uid, false) });
   }
   if (act === 'invite' && M === 'POST') { // нове посилання (старе перестає діяти)
     const inv = crypto.randomBytes(12).toString('base64url');

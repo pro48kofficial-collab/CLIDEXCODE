@@ -656,7 +656,7 @@ async function who(uid) {
 }
 const MEDAL_CATS = { follow: { l: 'F', t: [10, 20, 50, 100, 250] }, followers: { l: 'R', t: [10, 20, 50, 100, 250] }, likes: { l: 'L', t: [10, 50, 100, 500, 1000] }, games: { l: 'G', t: [1, 5, 10, 25, 50] } };
 const medalCode = id => { const m = /^(follow|followers|likes|games):([0-4])$/.exec(id); return m ? MEDAL_CATS[m[1]].l + m[2] : ''; };
-const FIGS = ['g-knight', 'g-crown', 'g-wizard', 'g-robot', 'g-dragon', 'g-astro'];
+const FIGS = ['g-knight', 'g-crown', 'g-wizard', 'g-robot', 'g-dragon', 'g-astro', 'w-snowman', 'w-santa', 'w-penguin', 'w-reindeer'];
 const bdOf = p => p ? (p.vf ? 'v' : '') + (p.yt ? 'y' : '') + (p.tt ? 't' : '') + (Array.isArray(p.md) && p.md.length ? '~' + p.md.map(medalCode).join('') : '') + (p.sg && FIGS.includes(p.sg) ? '^' + FIGS.indexOf(p.sg) : '') + (p.tb && Number.isInteger(p.tb.i) && p.tb.i >= 0 && p.tb.i < 4 ? '#' + p.tb.i : '') : '';
 function socialNorm(kind, v) { // повертає нормалізоване посилання, '' (очистити) або null (некоректне)
   v = String(v == null ? '' : v).trim(); if (!v) return '';
@@ -810,9 +810,19 @@ const DECOR = [
   { id: 'b-rose', k: 'banner', price: 1500, name: 'Рожевий туман' }, { id: 'b-deep', k: 'banner', price: 1500, name: 'Глибина' }, { id: 'b-candy', k: 'banner', price: 1500, name: 'Цукерка' },
   { id: 'b-forest', k: 'banner', price: 1800, name: 'Ліс' }, { id: 'b-ice', k: 'banner', price: 2000, name: 'Крига' }, { id: 'b-cyber', k: 'banner', price: 2000, name: 'Кіберсітка' },
   { id: 'b-plasma', k: 'banner', price: 3000, name: 'Плазма', anim: true }, { id: 'b-matrix', k: 'banner', price: 3500, name: 'Матриця', anim: true }, { id: 'b-storm', k: 'banner', price: 4000, name: 'Гроза', anim: true },
-  { id: 'b-gold', k: 'banner', price: 4500, name: 'Золоте сяйво', anim: true }, { id: 'b-prism', k: 'banner', price: 5000, name: 'Призма', anim: true }, { id: 'b-inferno', k: 'banner', price: 5500, name: 'Вогняний шторм', anim: true }
+  { id: 'b-gold', k: 'banner', price: 4500, name: 'Золоте сяйво', anim: true }, { id: 'b-prism', k: 'banner', price: 5000, name: 'Призма', anim: true }, { id: 'b-inferno', k: 'banner', price: 5500, name: 'Вогняний шторм', anim: true },
+  /* зимові банери (постійно в магазині) */
+  { id: 'b-snowy', k: 'banner', price: 1500, name: 'Сніжна ніч' }, { id: 'b-frost', k: 'banner', price: 1500, name: 'Іній' }, { id: 'b-drift', k: 'banner', price: 1800, name: 'Замет' }, { id: 'b-pine', k: 'banner', price: 2000, name: 'Засніжений ліс' },
+  { id: 'b-crystal', k: 'banner', price: 2000, name: 'Крижані кристали' }, { id: 'b-flakes', k: 'banner', price: 3000, name: 'Сніжинки', anim: true }, { id: 'b-polar', k: 'banner', price: 3500, name: 'Полярна ніч', anim: true }, { id: 'b-blizzard', k: 'banner', price: 4000, name: 'Хуртовина', anim: true },
+  /* зимовий івент-магазин (продаються лише під час івенту) */
+  { id: 'e-frost', k: 'frame', price: 1500, name: 'Іній', ev: 1 }, { id: 'e-candy', k: 'frame', price: 2000, name: 'Льодяник', ev: 1 }, { id: 'e-lights', k: 'frame', price: 3000, name: 'Гірлянда', anim: true, ev: 1 },
+  { id: 'e-xmas', k: 'banner', price: 2000, name: 'Святкова ніч', ev: 1 }, { id: 'e-snowfall', k: 'banner', price: 2500, name: 'Снігопад', anim: true, ev: 1 }, { id: 'e-glow', k: 'banner', price: 3500, name: 'Зимове сяйво', anim: true, ev: 1 },
+  { id: 'w-snowman', k: 'figure', price: 1500, name: 'Сніговик', ev: 1 }, { id: 'w-santa', k: 'figure', price: 1500, name: 'Шапка Санти', ev: 1 }, { id: 'w-penguin', k: 'figure', price: 2000, name: 'Пінгвін', anim: true, ev: 1 }, { id: 'w-reindeer', k: 'figure', price: 2500, name: 'Олень', anim: true, ev: 1 }
 ];
-const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}; return { ok: true, items: DECOR, inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '', figure: p.sg || '' }, coins: own ? null : w.c, inf: !!own }; };
+/* зимовий івент: щороку з 2 грудня до 14 січня (за київським часом); власник сайту має доступ завжди */
+const evDays = () => { const d = kday(), md = d.slice(5); if (!(md >= '12-02' || md <= '01-14')) return -1; const y = +d.slice(0, 4), end = Date.UTC(md >= '12-02' ? y + 1 : y, 0, 15), now = Date.UTC(y, +d.slice(5, 7) - 1, +d.slice(8, 10)); return Math.max(0, Math.round((end - now) / 86400000)); };
+const evActive = () => evDays() >= 0;
+const decorView = async (w, own, uid) => { const p = await jget('u:' + uid) || {}, evOn = evActive() || !!own, inv = w.inv || []; return { ok: true, ev: { on: evOn, real: evActive(), left: evDays() }, items: DECOR.filter(x => !x.ev || evOn || inv.includes(x.id)), inv: w.inv || [], eq: { frame: p.sf || '', banner: p.sb || '', figure: p.sg || '' }, coins: own ? null : w.c, inf: !!own }; };
 const FREE_AI_DAY = 15, AI_PACK = { n: 10, price: 50 }, AD_REWARD = 5, AD_DAILY_MAX = 20, AD_MIN_SEC = 14, AD_GAP_SEC = 30, FREE_SITES = 3;
 const DAILY = [ { c: 50, ai: 0 }, { c: 75, ai: 5 }, { c: 100, ai: 10 }, { c: 125, ai: 0 }, { c: 0, ai: 20 }, { c: 150, ai: 25 }, { c: 200, ai: 0 } ];
 const walletKey = uid => 'w:' + uid;
@@ -908,6 +918,7 @@ async function walletRoute(req, res, url) {
       const b = await body(req, res); if (!b) return;
       { const it = DECOR.find(x => x.id === b.item); if (it) {
         w.inv = w.inv || []; if (w.inv.includes(it.id)) return json(res, 409, { error: 'Цей предмет уже у вас' });
+        if (it.ev && !own && !evActive()) return json(res, 403, { error: 'Зимовий івент завершено — цей предмет більше не продається' });
         if (!own) { if (w.c < it.price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + it.price }); w.c -= it.price; }
         w.inv.push(it.id); await save(); stat('decor'); return json(res, 200, await decorView(w, own, a.uid));
       } }
@@ -1982,7 +1993,7 @@ const tmLv = t => TM_LV.filter(n => (t.bo | 0) >= n).length;
 const TM_FR = [{ id: 'tf1', lv: 1, name: 'Бронза' }, { id: 'tf2', lv: 2, name: 'Неон' }, { id: 'tf3', lv: 3, name: 'Золото' }, { id: 'tf4', lv: 4, name: 'Діамант', anim: true }];
 const TM_BD = [{ lv: 1, name: 'Бустер' }, { lv: 2, name: 'Сяйво' }, { lv: 3, name: 'Корона' }, { lv: 4, name: 'Діамант' }];
 const wallLv = d => !d.anim ? 1 : d.price <= 3500 ? 2 : 3;
-const TM_WALLS = DECOR.filter(d => d.k === 'banner').map(d => ({ id: d.id, name: d.name, lv: wallLv(d), anim: !!d.anim }));
+const TM_WALLS = DECOR.filter(d => d.k === 'banner' && !d.ev).map(d => ({ id: d.id, name: d.name, lv: wallLv(d), anim: !!d.anim }));
 async function tbClear(uid) { const p = await jget('u:' + uid); if (p && p.tb) { delete p.tb; await jset('u:' + uid, p); whoCache.delete(uid); } }
 async function tmSummary(t, me) {
   const mine = !!me && t.m.some(x => x.u === me);

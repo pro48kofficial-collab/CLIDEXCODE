@@ -1502,6 +1502,15 @@ async function ownerRoute(req, res, url, u, ip) {
   if (!ownerReq(req)) return json(res, 403, { error: 'Невірний ключ власника' });
   const M = req.method; let m;
   if (url === '/api/owner/check') return json(res, 200, { ok: true });
+  if (url === '/api/owner/maint') {
+    if (M === 'GET') return json(res, 200, { ok: true, on: MAINT.on, since: MAINT.since });
+    if (M === 'POST') {
+      let b = {}; try { const raw = await readBody(req, 2048); b = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
+      MAINT = { on: !!b.on, since: b.on ? (MAINT.on ? MAINT.since : Date.now()) : 0 }; maintLoaded = true;
+      await jset('maint', MAINT); console.log('maintenance', MAINT.on ? 'ON' : 'OFF');
+      return json(res, 200, { ok: true, on: MAINT.on, since: MAINT.since });
+    }
+  }
   if (url === '/api/owner/stats' && M === 'GET') {
     await flushStats(); const days = []; for (let i = 0; i < 7; i++) { const d = new Date(Date.now() - i * 86400e3).toISOString().slice(0, 10); days.push(Object.assign({ day: d }, (await jget('st:' + d)) || {})); }
     await reindexSites().catch(() => {});
@@ -2300,6 +2309,9 @@ async function teamRoute(req, res, url, u) {
   return json(res, 404, { error: 'Не знайдено' });
 }
 
+/* ---------- технічна перерва ---------- */
+let MAINT = { on: false, since: 0 }, maintLoaded = false;
+const maintMsg = 'Технічна перерва: проводяться виправлення помилок. Зазвичай перерва займає 1–2 години.';
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = clientIp(req);
   { // захист від перевантаження: короткий ліміт запитів з однієї адреси + тимчасовий бан
@@ -2328,6 +2340,8 @@ const server = http.createServer(async (req, res) => {
       return req.method === 'HEAD' ? res.end() : res.end(gz ? ent.gz : ent.raw);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
+    if (!maintLoaded) { maintLoaded = true; try { const m = await jget('maint'); if (m && typeof m === 'object') MAINT = { on: !!m.on, since: +m.since || 0 }; } catch (e) {} }
+    if (req.method === 'GET' && url === '/api/maint') return json(res, 200, { on: MAINT.on, since: MAINT.since, owner: MAINT.on ? ownerReq(req) : false });
     if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, oauth: OAUTH_ON(), mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
     if (pwaRoute(req, res, url)) return;
     if (url.startsWith('/api/rt/') && roomRoute(req, res, u)) return;
@@ -2338,6 +2352,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/mp.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' }); return res.end(mpLib(String(u.searchParams.get('scope') || 'preview').replace(/[^a-z0-9-]/g, '').slice(0, 60) || 'preview')); }
     const site = SITE_RE.exec(url);
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
+    if (MAINT.on && url.startsWith('/api/') && !ownerReq(req)) { res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '300', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: maintMsg, maint: true })); }
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
     if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {

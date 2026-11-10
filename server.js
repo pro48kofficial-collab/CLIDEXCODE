@@ -588,7 +588,6 @@ async function publish(req, res) {
 async function unpublish(req, res, slug) {
   const site = await getSite(slug); if (!site) return json(res, 404, { error: 'Сайт не знайдено' });
   const t = req.headers['x-site-token']; if (typeof t !== 'string' || site.tokenHash !== sha(t)) return json(res, 403, { error: 'Немає права видаляти цей сайт' });
-  for (const d of (site.domains || [])) { await kvDel('d:' + d); domCache.delete(d); }
   await kvDel('site:' + slug); siteCache.delete(slug); await sitesIdxSet(slug, null); return json(res, 200, { ok: true });
 }
 async function serveSite(req, res, m, search) {
@@ -611,6 +610,30 @@ async function serveSite(req, res, m, search) {
   res.end(req.method === 'HEAD' ? undefined : buf);
 }
 
+
+/* ---------- чати зі ШІ: збереження в хмарі ---------- */
+const CHAT_ID = /^[a-z0-9]{6,24}$/, CHAT_MAX = 60, CHAT_CHARS = 1500000;
+function cleanChats(arr) {
+  const out = [];
+  for (const c of (Array.isArray(arr) ? arr : []).slice(0, 80)) {
+    if (!c || typeof c.id !== 'string' || !CHAT_ID.test(c.id)) continue;
+    const m = (Array.isArray(c.m) ? c.m : []).slice(0, 300).filter(x => x && (x.r === 'u' || x.r === 'm') && typeof x.t === 'string').map(x => ({ r: x.r, t: x.t.slice(0, 12000) }));
+    const o = { id: c.id, t: String(c.t || '').slice(0, 80), u: Number.isFinite(+c.u) ? +c.u : 0, c: Number.isFinite(+c.c) ? +c.c : 0, m };
+    if (typeof c.pid === 'string' && c.pid.length <= 40) o.pid = c.pid;
+    out.push(o);
+  }
+  return out;
+}
+function cleanTombs(d) { const o = {}; if (d && typeof d === 'object') for (const k of Object.keys(d).slice(0, 500)) if (CHAT_ID.test(k) && Number.isFinite(+d[k])) o[k] = +d[k]; return o; }
+function mergeChats(a, ad, b, bd) {
+  const del = Object.assign({}, ad); for (const k in bd) del[k] = Math.max(del[k] || 0, bd[k]);
+  const mp = new Map(); for (const c of a.concat(b)) { const o = mp.get(c.id); if (!o || c.u > o.u) mp.set(c.id, c); }
+  let list = [...mp.values()].filter(c => !(del[c.id] >= c.u)).sort((x, y) => y.u - x.u).slice(0, CHAT_MAX);
+  let tot = 0; list = list.filter(c => { tot += c.m.reduce((n, x) => n + x.t.length, 0); return tot <= CHAT_CHARS; });
+  const ks = Object.keys(del).sort((x, y) => del[y] - del[x]).slice(0, 300), d2 = {}; for (const k of ks) d2[k] = del[k];
+  return { c: list, d: d2 };
+}
+
 /* ---------------- хмарне збереження (sync) ---------------- */
 const CODE_RE = /^[A-Za-z0-9_-]{20,64}$/;
 const syncUid = req => { const c = req.headers['x-sync-code']; return typeof c === 'string' && CODE_RE.test(c) ? sha('clidex-sync:' + c) : null; };
@@ -624,6 +647,12 @@ async function syncRoute(req, res, url) {
     await kvSet('s:' + u, JSON.stringify({ p: st.p, del: st.del && typeof st.del === 'object' ? st.del : {}, blobs: st.blobs, t: Date.now() }));
     const keep = new Set(st.blobs); for (const id of oldBlobs) if (!keep.has(id)) await kvDel('b:' + u + ':' + id);
     return json(res, 200, { ok: true });
+  }
+  if (url === '/api/chats' && (req.method === 'PUT' || req.method === 'GET')) {
+    let inc = { c: [], d: {} };
+    if (req.method === 'PUT') { try { inc = JSON.parse(await readBody(req, 3 * 1048576)); } catch (e) { return json(res, 400, { error: 'Некоректні дані або завеликі' }); } }
+    const out = await withLock('ch:' + u, async () => { const old = (await jget('ch:' + u)) || { c: [], d: {} }; const r = mergeChats(cleanChats(old.c), cleanTombs(old.d), cleanChats(inc && inc.c), cleanTombs(inc && inc.d)); await jset('ch:' + u, r); return r; });
+    return json(res, 200, out);
   }
   const m = url.match(/^\/api\/sync\/blob\/([a-z0-9]{6,40})$/);
   if (m && req.method === 'GET') { const d = await kvGet('b:' + u + ':' + m[1]); if (d == null) return json(res, 404, { error: 'Немає даних' }); res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(d); }
@@ -639,9 +668,7 @@ async function syncRoute(req, res, url) {
 const RESEND_KEY = process.env.RESEND_API_KEY || '', RESEND_URL = process.env.RESEND_API_URL || 'https://api.resend.com/emails';
 const MAIL_FROM = process.env.MAIL_FROM || 'Clidex Editor <onboarding@resend.dev>';
 const PUBLIC_HOST = (process.env.PUBLIC_HOST || process.env.RENDER_EXTERNAL_HOSTNAME || '').toLowerCase();
-const RENDER_KEY = process.env.RENDER_API_KEY || '', RENDER_SVC = process.env.RENDER_SERVICE_ID || '';
 const NICK_RE = /^[\p{L}\p{N}_-]{3,24}$/u, EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
-const DOM_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
 const locks = new Map();
 const withLock = (k, fn) => { const prev = locks.get(k) || Promise.resolve(); const p = prev.then(fn, fn); const t = p.catch(() => {}); locks.set(k, t); t.then(() => { if (locks.get(k) === t) locks.delete(k); }); return p; };
 const jget = async k => { const r = await kvGet(k); return r ? JSON.parse(r) : null; };
@@ -791,9 +818,9 @@ async function emailUnlink(req, res) {
 const kday = (t) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date(t || Date.now()));
 const kprev = () => kday(Date.now() - 86400000);
 const PLANS = {
-  free: { name: 'Clidex Editor Free', sites: 3, doms: 0, suf: [] },
-  pro:  { name: 'Clidex Pro Editor', price: 2500, sites: 10, doms: 2, suf: ['.clidex', '.editor.code'] },
-  plus: { name: 'Clidex Plus', price: 5000, sites: Infinity, doms: 5, suf: ['.clidex', '.editor.code', '.clidex.plus', '.com.game'], daily: 100 }
+  free: { name: 'Clidex Editor Free', sites: 3 },
+  pro:  { name: 'Clidex Pro Editor', price: 2500, sites: 10 },
+  plus: { name: 'Clidex Plus', price: 5000, sites: Infinity, daily: 100 }
 };
 const RANK = { free: 0, pro: 1, plus: 2 };
 const PLUS_MODEL = process.env.GEMINI_PLUS_MODEL || 'gemini-2.5-pro';
@@ -830,7 +857,7 @@ const walletGet = async uid => Object.assign({ c: 0, s: 0, l: '', ai: 0, u: { d:
 const walletView = (w, own) => {
   const today = kday(); let next = w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s + 1 : 1);
   const used = w.u.d === today ? w.u.n : 0, ads = w.ad.d === today ? w.ad.n : 0;
-  const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites, doms: PLANS.pro.doms, suf: PLANS.pro.suf }, plus: { price: PLANS.plus.price, sites: 'inf', doms: PLANS.plus.doms, suf: PLANS.plus.suf, daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK, unlock: UNLOCK_PRICE };
+  const pl = planOf(w); return { coins: own ? null : w.c, inf: !!own, plan: pl, plans: { pro: { price: PLANS.pro.price, sites: PLANS.pro.sites }, plus: { price: PLANS.plus.price, sites: 'inf', daily: PLANS.plus.daily } }, canClaim: w.l !== today, day: next, claimed: w.l === today ? w.s : (w.l === kprev() && w.s < 7 ? w.s : 0), rewards: DAILY, ai: { used, limit: pl === 'free' ? FREE_AI_DAY : null, bonus: w.ai }, ads: { today: ads, max: AD_DAILY_MAX, reward: AD_REWARD }, sites: { limit: PLANS[pl].sites === Infinity ? null : PLANS[pl].sites }, aiPack: AI_PACK, unlock: UNLOCK_PRICE };
 };
 
 /* ===== Marketplace ===== */
@@ -965,7 +992,6 @@ async function aiQuota(uid, capOverride) {
 }
 async function siteCountOf(uid) { return ((await jget('sites')) || []).filter(s => s.uid === uid).length; }
 const planOfUid = async uid => planOf(await walletGet(uid));
-const allowedDomain = (d, plan) => PLANS[plan].suf.some(sf => d.endsWith(sf) && /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(d.slice(0, -sf.length)));
 
 /* вхід через обліковий запис Google / GitHub (OAuth) */
 const OAUTH = {
@@ -1163,53 +1189,6 @@ async function feedDelete(req, res, id) {
   await postRemove(id); return json(res, 200, { ok: true });
 }
 
-/* власні домени */
-const domCache = new Map();
-async function domainSlug(host) {
-  const c = domCache.get(host); if (c && Date.now() - c.t < 30000) return c.slug;
-  const slug = (await kvGet('d:' + host)) || ''; domCache.set(host, { t: Date.now(), slug }); if (domCache.size > 300) domCache.delete(domCache.keys().next().value); return slug;
-}
-const isMainHost = h => !h || h === 'localhost' || net.isIP(h) || h === PUBLIC_HOST || h.endsWith('.onrender.com');
-async function renderAddDomain(domain) {
-  if (!RENDER_KEY || !RENDER_SVC) return '';
-  try {
-    const r = await fetch((process.env.RENDER_API_URL || 'https://api.render.com/v1') + '/services/' + RENDER_SVC + '/custom-domains', { method: 'POST', headers: { Authorization: 'Bearer ' + RENDER_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ name: domain }) });
-    return r.ok ? 'render' : 'render-fail:' + r.status;
-  } catch (e) { return 'render-fail'; }
-}
-async function domainAdd(req, res) {
-  const b = await body(req, res); if (!b) return;
-  const slug = String(b.slug || ''), domain = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
-  const site = await getSite(slug); if (!site) return json(res, 404, { error: 'Спочатку опублікуйте сайт' });
-  if (typeof b.token !== 'string' || site.tokenHash !== sha(b.token)) return json(res, 403, { error: 'Немає права змінювати цей сайт' });
-  const duid = syncUid(req); if (!duid || !(await jget('u:' + duid))) return json(res, 401, { error: 'Увійдіть в акаунт' });
-  const dplan = await planOfUid(duid);
-  if (dplan === 'free') return json(res, 403, { error: 'Власні домени доступні з тарифом Pro або Plus' });
-  if (!DOM_RE.test(domain) || !allowedDomain(domain, dplan)) return json(res, 400, { error: 'Неправильний домен' });
-  const cur = await kvGet('d:' + domain); if (cur && cur !== slug) return json(res, 409, { error: 'Цей домен уже використовується іншим сайтом' });
-  if (!cur && (site.domains || []).length >= PLANS[dplan].doms) return json(res, 400, { error: 'Ваш тариф: до ' + PLANS[dplan].doms + ' доменів на сайт' });
-  await kvSet('d:' + domain, slug); domCache.delete(domain);
-  if (!(site.domains || []).includes(domain)) { site.domains = (site.domains || []).concat(domain); await kvSet('site:' + slug, JSON.stringify(site)); siteCache.set(slug, { t: Date.now(), site }); }
-  const render = await renderAddDomain(domain);
-  return json(res, 200, { domain, domains: site.domains, target: PUBLIC_HOST || String(req.headers.host || '').split(':')[0], render });
-}
-async function domainRemove(req, res, domain) {
-  const slug = await kvGet('d:' + domain); if (!slug) return json(res, 404, { error: 'Домен не знайдено' });
-  const site = await getSite(slug); const t = req.headers['x-site-token'];
-  if (!site || typeof t !== 'string' || site.tokenHash !== sha(t)) return json(res, 403, { error: 'Немає права змінювати цей сайт' });
-  await kvDel('d:' + domain); domCache.delete(domain); site.domains = (site.domains || []).filter(x => x !== domain);
-  await kvSet('site:' + slug, JSON.stringify(site)); siteCache.set(slug, { t: Date.now(), site }); return json(res, 200, { ok: true, domains: site.domains });
-}
-async function domainCheck(req, res, domain) {
-  if (!DOM_RE.test(domain)) return json(res, 400, { error: 'Некоректний домен' });
-  const target = PUBLIC_HOST || String(req.headers.host || '').split(':')[0], dns = require('dns').promises, out = { target, cname: [], a: [], ok: false };
-  try { out.cname = await dns.resolveCname(domain); } catch (e) {}
-  try { out.a = await dns.resolve4(domain); } catch (e) {}
-  let ta = []; try { ta = await dns.resolve4(target); } catch (e) {}
-  out.ok = out.cname.some(c => c.toLowerCase() === target) || (out.a.length > 0 && out.a.some(x => ta.includes(x)));
-  out.served = !!(await kvGet('d:' + domain)); return json(res, 200, out);
-}
-
 /* ---------------- v2: власник, модерація, коментарі, підписки, сповіщення, каталог, лідерборди, бекапи, PWA ---------------- */
 const ipOf = req => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 const dayKey = () => new Date().toISOString().slice(0, 10);
@@ -1403,7 +1382,7 @@ async function repLabel(r) {
 
 /* каталог сайтів */
 const siteSize = f => Object.values(f || {}).reduce((n, v) => n + (typeof v === 'string' ? v.length : 0), 0);
-const siteMeta = (slug, r) => ({ slug, name: r.name || '', uid: r.uid || '', vis: r.vis || 'private', tags: r.tags || [], desc: r.desc || '', created: r.created, updated: r.updated, size: siteSize(r.files), hidden: !!r.hidden, dom: (r.domains || []).length });
+const siteMeta = (slug, r) => ({ slug, name: r.name || '', uid: r.uid || '', vis: r.vis || 'private', tags: r.tags || [], desc: r.desc || '', created: r.created, updated: r.updated, size: siteSize(r.files), hidden: !!r.hidden });
 async function sitesIdxSet(slug, meta) {
   return withLock('sites', async () => {
     const a = (await jget('sites')) || [], i = a.findIndex(x => x.slug === slug);
@@ -1419,7 +1398,6 @@ async function reindexSites() {
 }
 async function deleteSite(slug) {
   const site = await getSite(slug); if (!site) { await sitesIdxSet(slug, null); return false; }
-  for (const d of (site.domains || [])) { await kvDel('d:' + d); domCache.delete(d); }
   await kvDel('site:' + slug); siteCache.delete(slug); await sitesIdxSet(slug, null); return true;
 }
 async function sitesCatalog(req, res, u) {
@@ -1469,7 +1447,7 @@ async function snapshot() {
   }
   for (const m of (await jget('repos')) || []) { await put('repo:' + m.id); await put('rl:' + m.id); await put('cm:repo:' + m.id); }
   for (const x of (await jget('feed')) || []) await put('cm:post:' + x.id);
-  for (const m of (await jget('sites')) || []) { await put('site:' + m.slug); const s = data['site:' + m.slug] ? JSON.parse(data['site:' + m.slug]) : null; for (const d of (s && s.domains) || []) await put('d:' + d); }
+  for (const m of (await jget('sites')) || []) { await put('site:' + m.slug); const s = data['site:' + m.slug] ? JSON.parse(data['site:' + m.slug]) : null; }
   return zlib.gzipSync(Buffer.from(JSON.stringify({ v: 1, t: Date.now(), data })));
 }
 async function makeBackup() {
@@ -1484,7 +1462,7 @@ async function makeBackup() {
 async function restoreBackup(gz) {
   const o = JSON.parse(zlib.gunzipSync(gz).toString('utf8')); if (!o || o.v !== 1 || !o.data || typeof o.data !== 'object') throw new Error('bad backup');
   let n = 0; for (const k of Object.keys(o.data)) { if (/^(b:|bk:|bks$|st:)/.test(k) || typeof o.data[k] !== 'string') continue; await kvSet(k, o.data[k]); n++; }
-  siteCache.clear(); domCache.clear(); whoCache.clear(); bansC.t = 0; cfgC.t = 0; return n;
+  siteCache.clear(); whoCache.clear(); bansC.t = 0; cfgC.t = 0; return n;
 }
 async function autoBackup() {
   try {
@@ -1503,14 +1481,17 @@ async function ownerRoute(req, res, url, u, ip) {
   const M = req.method; let m;
   if (url === '/api/owner/check') return json(res, 200, { ok: true });
   if (url === '/api/owner/maint') {
-    if (M === 'GET') return json(res, 200, { ok: true, on: MAINT.on, since: MAINT.since });
+    if (M === 'GET') return json(res, 200, Object.assign({ ok: true }, maintPub(req)));
     if (M === 'POST') {
       let b = {}; try { const raw = await readBody(req, 2048); b = raw.trim() ? JSON.parse(raw) : {}; } catch (e) { return json(res, 400, { error: 'Некоректний запит' }); }
-      MAINT = { on: !!b.on, since: b.on ? (MAINT.on ? MAINT.since : Date.now()) : 0 }; maintLoaded = true;
-      await jset('maint', MAINT); console.log('maintenance', MAINT.on ? 'ON' : 'OFF');
-      return json(res, 200, { ok: true, on: MAINT.on, since: MAINT.since });
+      const delay = Math.max(0, Math.min(1440, parseInt(b.delay, 10) || 0)), dur = Math.max(0, Math.min(1440, parseInt(b.dur, 10) || 0));
+      if (b.on) { const at = Date.now() + delay * 60e3; MAINT = { on: true, since: at, at, eta: dur ? at + dur * 60e3 : 0 }; }
+      else MAINT = { on: false, since: 0, at: 0, eta: 0 };
+      maintLoaded = true; await jset('maint', MAINT); console.log('maintenance', MAINT.on ? 'ON' : 'OFF');
+      return json(res, 200, Object.assign({ ok: true }, maintPub(req)));
     }
   }
+  if (url === '/api/owner/audit' && M === 'GET') return json(res, 200, { log: ((await jget('audit')) || []).slice(0, 200) });
   if (url === '/api/owner/stats' && M === 'GET') {
     await flushStats(); const days = []; for (let i = 0; i < 7; i++) { const d = new Date(Date.now() - i * 86400e3).toISOString().slice(0, 10); days.push(Object.assign({ day: d }, (await jget('st:' + d)) || {})); }
     await reindexSites().catch(() => {});
@@ -2256,6 +2237,7 @@ async function teamRoute(req, res, url, u) {
       return json(res, 200, { ok: true, tb: p.tb || null, bd: bdOf(p) });
     }
     if (!isMem && !own) return json(res, 403, { error: 'Бустити можуть лише учасники команди' });
+    if (!own && (await planOfUid(a.uid)) === 'free') return json(res, 403, { error: 'Бустити спільноти можна лише з тарифом Pro', needPlan: true });
     const how = b.how === 'points' ? 'points' : 'coins';
     if (how === 'points' && !isOwner && !own) return json(res, 403, { error: 'Бали команди може витрачати лише її власник' });
     if (limited(a.uid, 'tmboost', 30)) return json(res, 429, { error: 'Забагато спроб. Спробуйте пізніше.' });
@@ -2310,7 +2292,10 @@ async function teamRoute(req, res, url, u) {
 }
 
 /* ---------- технічна перерва ---------- */
-let MAINT = { on: false, since: 0 }, maintLoaded = false;
+let MAINT = { on: false, since: 0, at: 0, eta: 0 }, maintLoaded = false;
+const maintActive = () => MAINT.on && Date.now() >= (MAINT.at || 0);
+const maintPub = (req) => ({ on: maintActive(), since: MAINT.since, eta: MAINT.on ? MAINT.eta : 0, soon: MAINT.on && !maintActive() ? MAINT.at : 0, owner: MAINT.on ? ownerReq(req) : false, now: Date.now() });
+async function auditAdd(e) { try { await withLock('audit', async () => { const l = (await jget('audit')) || []; l.unshift(e); if (l.length > 500) l.length = 500; await jset('audit', l); }); } catch (x) {} }
 const maintMsg = 'Технічна перерва: проводяться виправлення помилок. Зазвичай перерва займає 1–2 години.';
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url || '/', 'http://x'); let url = u.pathname; const ip = clientIp(req);
@@ -2321,15 +2306,6 @@ const server = http.createServer(async (req, res) => {
   }
   const authed = () => !PASSWORD || req.headers['x-app-password'] === PASSWORD;
   try {
-    const hostH = String(req.headers.host || '').split(':')[0].toLowerCase();
-    { const vm = url.match(/^\/@([a-z0-9][a-z0-9.-]{2,252})(\/.*)?$/i);
-      if (vm && (req.method === 'GET' || req.method === 'HEAD')) {
-        const dsl = await domainSlug(vm[1].toLowerCase());
-        if (!dsl) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px system-ui;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center"><div><h2>Домен не підключено</h2><p>Додайте цей домен до опублікованого сайту у вікні «Власний домен».</p></div>'); }
-        if (vm[2] === undefined) { res.writeHead(301, { Location: '/@' + vm[1] + '/' + u.search }); return res.end(); }
-        url = '/' + dsl + vm[2];
-      } }
-    if (!isMainHost(hostH) && !url.startsWith('/api/')) { const ds = await domainSlug(hostH); if (ds) url = '/' + ds + (url === '' ? '/' : url); }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url === '/' || url === '/index.html')) {
       const st = fs.statSync(INDEX); const org = siteOrigin(req);
       if (!idxCache || idxCache.m !== st.mtimeMs) idxCache = { m: st.mtimeMs, base: fs.readFileSync(INDEX, 'utf8'), by: {} };
@@ -2340,9 +2316,10 @@ const server = http.createServer(async (req, res) => {
       return req.method === 'HEAD' ? res.end() : res.end(gz ? ent.gz : ent.raw);
     }
     if (req.method === 'GET' && url === '/healthz') { res.writeHead(200); return res.end('ok'); }
-    if (!maintLoaded) { maintLoaded = true; try { const m = await jget('maint'); if (m && typeof m === 'object') MAINT = { on: !!m.on, since: +m.since || 0 }; } catch (e) {} }
-    if (req.method === 'GET' && url === '/api/maint') return json(res, 200, { on: MAINT.on, since: MAINT.since, owner: MAINT.on ? ownerReq(req) : false });
-    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, oauth: OAUTH_ON(), mp: true, host: PUBLIC_HOST, renderDomains: !!(RENDER_KEY && RENDER_SVC), prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
+    if (!maintLoaded) { maintLoaded = true; try { const m = await jget('maint'); if (m && typeof m === 'object') MAINT = { on: !!m.on, since: +m.since || 0, at: +m.at || 0, eta: +m.eta || 0 }; } catch (e) {} }
+    if (req.method === 'GET' && url === '/api/maint') return json(res, 200, maintPub(req));
+    if (url.startsWith('/api/') && req.method !== 'GET' && req.method !== 'OPTIONS' && ownerReq(req)) { const t0 = Date.now(), mm = req.method, uu = url.slice(0, 120); res.on('finish', () => { auditAdd({ t: t0, m: mm, u: uu.replace(/[?#].*$/, ''), s: res.statusCode, ip: crypto.createHash('sha256').update(String(ip || '')).digest('hex').slice(0, 6) }); }); }
+    if (req.method === 'GET' && url === '/api/health') return json(res, 200, { ai: !!KEY, auth: !!PASSWORD, model: MODEL, publish: true, sync: true, edit: true, social: true, owner: !!OWNER_KEY, pow: POW_BITS, mail: !!RESEND_KEY, oauth: OAUTH_ON(), mp: true, host: PUBLIC_HOST, prefix: PREFIX, storage: { kind: B.kind, durable: B.durable } });
     if (pwaRoute(req, res, url)) return;
     if (url.startsWith('/api/rt/') && roomRoute(req, res, u)) return;
     let lm;
@@ -2352,10 +2329,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url === '/api/mp.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' }); return res.end(mpLib(String(u.searchParams.get('scope') || 'preview').replace(/[^a-z0-9-]/g, '').slice(0, 60) || 'preview')); }
     const site = SITE_RE.exec(url);
     if (site && (req.method === 'GET' || req.method === 'HEAD')) return await serveSite(req, res, site, u.search);
-    if (MAINT.on && url.startsWith('/api/') && !ownerReq(req)) { res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '300', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: maintMsg, maint: true })); }
+    if (maintActive() && url.startsWith('/api/') && !ownerReq(req)) { res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '300', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: maintMsg, maint: true })); }
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/domains') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -2389,8 +2366,6 @@ const server = http.createServer(async (req, res) => {
       if (url === '/api/feed' && M === 'POST') return await feedPost(req, res, ip);
       if ((am = url.match(/^\/api\/feed\/([a-f0-9]{12})(\/like)?$/))) { if (M === 'POST' && am[2]) return await feedLike(req, res, am[1]); if (M === 'DELETE' && !am[2]) return await feedDelete(req, res, am[1]); }
       if ((am = url.match(/^\/api\/users\/([^/]{1,60})$/)) && M === 'GET') return await userGet(req, res, decodeURIComponent(am[1]));
-      if (url === '/api/domains' && M === 'POST') return await domainAdd(req, res);
-      if ((am = url.match(/^\/api\/domains\/([a-z0-9.-]{4,253})(\/check)?$/))) { if (M === 'DELETE' && !am[2]) return await domainRemove(req, res, am[1]); if (M === 'GET' && am[2]) return await domainCheck(req, res, am[1]); }
     }
     if (req.method === 'POST' && url === '/api/apk') { if (!authed()) return json(res, 401, { error: 'Невірний пароль' }); return await apkRoute(req, res); }
     if (req.method === 'POST' && (url === '/api/generate' || url === '/api/ask')) {
@@ -2412,7 +2387,7 @@ const server = http.createServer(async (req, res) => {
       stat('ai');
       return url === '/api/ask' ? await askAI(req, res) : await generate(req, res);
     }
-    if (url.startsWith('/api/publish') || url.startsWith('/api/sync')) {
+    if (url.startsWith('/api/publish') || url.startsWith('/api/sync') || url === '/api/chats') {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (url === '/api/publish' && req.method === 'POST') {
         if (limited(ip, 'pub', PUB_LIMIT)) return json(res, 429, { error: 'Забагато публікацій. Спробуйте за годину.' });
@@ -2420,7 +2395,7 @@ const server = http.createServer(async (req, res) => {
       }
       const d = url.match(/^\/api\/publish\/([a-z0-9-]{1,80})$/);
       if (d && req.method === 'DELETE' && d[1].startsWith(PREFIX)) return await unpublish(req, res, d[1]);
-      if (url.startsWith('/api/sync')) {
+      if (url.startsWith('/api/sync') || url === '/api/chats') {
         if (limited(ip, 'sync', SYNC_LIMIT)) return json(res, 429, { error: 'Забагато запитів синхронізації' });
         return await syncRoute(req, res, url);
       }

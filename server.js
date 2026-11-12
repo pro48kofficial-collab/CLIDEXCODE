@@ -914,31 +914,32 @@ async function marketRoute(req, res, url, u) {
   return json(res, 404, { error: 'Не знайдено' });
 }
 const GIFTS = [
-  { id: 'g_heart', e: '💝', n: 'Серце', c: 'love', price: 50, r: 'c' },
-  { id: 'g_rose', e: '🌹', n: 'Троянда', c: 'love', price: 80, r: 'c' },
-  { id: 'g_bear', e: '🧸', n: 'Плюшевий ведмідь', c: 'love', price: 150, r: 'r' },
-  { id: 'g_ring', e: '💍', n: 'Перстень', c: 'love', price: 900, r: 'e' },
-  { id: 'g_cake', e: '🎂', n: 'Торт', c: 'fun', price: 60, r: 'c' },
-  { id: 'g_balloon', e: '🎈', n: 'Кулька', c: 'fun', price: 40, r: 'c' },
-  { id: 'g_pizza', e: '🍕', n: 'Піца', c: 'fun', price: 70, r: 'c' },
-  { id: 'g_party', e: '🎉', n: 'Святкове конфеті', c: 'fun', price: 120, r: 'r' },
-  { id: 'g_coffee', e: '☕', n: 'Кава для кодера', c: 'tech', price: 45, r: 'c' },
-  { id: 'g_bug', e: '🐞', n: 'Золотий баг', c: 'tech', price: 200, r: 'r' },
-  { id: 'g_robot', e: '🤖', n: 'Робот Prok', c: 'tech', price: 350, r: 'r' },
-  { id: 'g_chip', e: '💾', n: 'Легендарний чіп', c: 'tech', price: 1200, r: 'e' },
-  { id: 'g_rocket', e: '🚀', n: 'Ракета', c: 'space', price: 300, r: 'r' },
-  { id: 'g_moon', e: '🌙', n: 'Місяць', c: 'space', price: 250, r: 'r' },
-  { id: 'g_ufo', e: '🛸', n: 'НЛО', c: 'space', price: 600, r: 'e' },
-  { id: 'g_star', e: '🌟', n: 'Зірка', c: 'space', price: 500, r: 'e' },
-  { id: 'g_crown', e: '👑', n: 'Корона', c: 'lux', price: 1500, r: 'l' },
-  { id: 'g_gem', e: '💎', n: 'Діамант', c: 'lux', price: 2000, r: 'l' },
-  { id: 'g_trophy', e: '🏆', n: 'Кубок', c: 'lux', price: 1000, r: 'e' },
-  { id: 'g_dragon', e: '🐉', n: 'Дракон', c: 'lux', price: 3000, r: 'l' }
+  { id: 'g_duck', e: '🦆', n: 'Каченя для дебагу', c: 'dev', price: 40, r: 'c', an: 'bob' },
+  { id: 'g_coffee', e: '☕', n: 'Чашка кави', c: 'dev', price: 45, r: 'c', an: 'steam' },
+  { id: 'g_keyboard', e: '⌨️', n: 'Гумова клавіатура', c: 'dev', price: 60, r: 'c', an: 'tap' },
+  { id: 'g_check', e: '✅', n: 'Зелена галочка', c: 'dev', price: 50, r: 'c', an: 'pop' },
+  { id: 'g_box', e: '🎁', n: 'Подарункова коробка Clidex', c: 'lux', price: 100, r: 'r', an: 'shake' },
+  { id: 'g_mic', e: '🎙️', n: 'Голографічний мікрофон', c: 'dev', price: 250, r: 'r', an: 'pulse' },
+  { id: 'g_pixel', e: '🟨', n: 'Золотий піксель', c: 'dev', price: 300, r: 'r', an: 'shine' },
+  { id: 'g_rocket', e: '🚀', n: 'Ракета «Деплой»', c: 'dev', price: 300, r: 'r', an: 'fly' },
+  { id: 'g_cube', e: '🧊', n: 'Блакитний кристалічний куб', c: 'cyber', price: 500, r: 'e', an: 'float' },
+  { id: 'g_loop', e: '🎤', n: 'Зіркова петля', c: 'cyber', price: 350, r: 'r', an: 'swing' },
+  { id: 'g_bear', e: '🧸', n: 'Мобільний кібер-ведмідь', c: 'cyber', price: 400, r: 'r', an: 'wave' },
+  { id: 'g_moon', e: '🌙', n: 'Нічний місяць в окулярах', c: 'lux', price: 450, r: 'e', an: 'sway' },
+  { id: 'g_trophy', e: '🏆', n: 'Кібер-меч', c: 'cyber', price: 1000, r: 'e', an: 'shine' },
+  { id: 'g_sword', e: '⚔️', n: 'Мобільний кібер-ведмідь', c: 'cyber', price: 600, r: 'e', an: 'slash' },
+  { id: 'g_hat', e: '🧙', n: 'Магічний капелюх розробника', c: 'lux', price: 700, r: 'e', an: 'tilt' },
+  { id: 'g_star', e: '🌟', n: 'Зірка Prok’а', c: 'lux', price: 1200, r: 'e', an: 'twinkle' },
+  { id: 'g_diamond', e: '💎', n: 'Діамантова кнопка «Студія»', c: 'lux', price: 2000, r: 'l', an: 'sparkle' },
+  { id: 'g_reactor', e: '⚛️', n: 'Квантовий реактор', c: 'cyber', price: 2500, r: 'l', an: 'rot' },
+  { id: 'g_crown', e: '👑', n: 'Золота корона Clidex', c: 'lux', price: 3000, r: 'l', an: 'float' },
+  { id: 'g_artifact', e: '🔮', n: 'Артефакт «Головний Адмін»', c: 'lux', price: 5000, r: 'l', an: 'glow' }
 ];
+const GIFT_OLD = { g_heart: 'g_box', g_rose: 'g_box', g_bear: 'g_bear', g_ring: 'g_diamond', g_cake: 'g_box', g_balloon: 'g_duck', g_pizza: 'g_keyboard', g_party: 'g_box', g_coffee: 'g_coffee', g_bug: 'g_duck', g_robot: 'g_loop', g_chip: 'g_reactor', g_rocket: 'g_rocket', g_moon: 'g_moon', g_ufo: 'g_cube', g_star: 'g_star', g_crown: 'g_crown', g_gem: 'g_diamond', g_trophy: 'g_trophy', g_dragon: 'g_artifact' };
 const GIFT_SELL = 0.7;
 const giftsOut = async (uid, self) => {
   const a = (await jget('gf:' + uid)) || [], out = [];
-  for (const x of a) { if (x.h && !self) continue; const f = x.f && !x.a ? await who(x.f) : null; out.push({ id: x.id, g: x.g, t: x.t, m: x.m || '', h: !!x.h, from: f ? f.nick : '', anon: !!x.a }); }
+  for (const x of a) { if (GIFT_OLD[x.g]) x.g = GIFT_OLD[x.g]; if (x.h && !self) continue; const f = x.f && !x.a ? await who(x.f) : null; out.push({ id: x.id, g: x.g, t: x.t, m: x.m || '', h: !!x.h, from: f ? f.nick : '', anon: !!x.a }); }
   return out;
 };
 async function walletRoute(req, res, url) {

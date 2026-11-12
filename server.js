@@ -913,6 +913,34 @@ async function marketRoute(req, res, url, u) {
   }
   return json(res, 404, { error: 'Не знайдено' });
 }
+const GIFTS = [
+  { id: 'g_heart', e: '💝', n: 'Серце', c: 'love', price: 50, r: 'c' },
+  { id: 'g_rose', e: '🌹', n: 'Троянда', c: 'love', price: 80, r: 'c' },
+  { id: 'g_bear', e: '🧸', n: 'Плюшевий ведмідь', c: 'love', price: 150, r: 'r' },
+  { id: 'g_ring', e: '💍', n: 'Перстень', c: 'love', price: 900, r: 'e' },
+  { id: 'g_cake', e: '🎂', n: 'Торт', c: 'fun', price: 60, r: 'c' },
+  { id: 'g_balloon', e: '🎈', n: 'Кулька', c: 'fun', price: 40, r: 'c' },
+  { id: 'g_pizza', e: '🍕', n: 'Піца', c: 'fun', price: 70, r: 'c' },
+  { id: 'g_party', e: '🎉', n: 'Святкове конфеті', c: 'fun', price: 120, r: 'r' },
+  { id: 'g_coffee', e: '☕', n: 'Кава для кодера', c: 'tech', price: 45, r: 'c' },
+  { id: 'g_bug', e: '🐞', n: 'Золотий баг', c: 'tech', price: 200, r: 'r' },
+  { id: 'g_robot', e: '🤖', n: 'Робот Prok', c: 'tech', price: 350, r: 'r' },
+  { id: 'g_chip', e: '💾', n: 'Легендарний чіп', c: 'tech', price: 1200, r: 'e' },
+  { id: 'g_rocket', e: '🚀', n: 'Ракета', c: 'space', price: 300, r: 'r' },
+  { id: 'g_moon', e: '🌙', n: 'Місяць', c: 'space', price: 250, r: 'r' },
+  { id: 'g_ufo', e: '🛸', n: 'НЛО', c: 'space', price: 600, r: 'e' },
+  { id: 'g_star', e: '🌟', n: 'Зірка', c: 'space', price: 500, r: 'e' },
+  { id: 'g_crown', e: '👑', n: 'Корона', c: 'lux', price: 1500, r: 'l' },
+  { id: 'g_gem', e: '💎', n: 'Діамант', c: 'lux', price: 2000, r: 'l' },
+  { id: 'g_trophy', e: '🏆', n: 'Кубок', c: 'lux', price: 1000, r: 'e' },
+  { id: 'g_dragon', e: '🐉', n: 'Дракон', c: 'lux', price: 3000, r: 'l' }
+];
+const GIFT_SELL = 0.7;
+const giftsOut = async (uid, self) => {
+  const a = (await jget('gf:' + uid)) || [], out = [];
+  for (const x of a) { if (x.h && !self) continue; const f = x.f && !x.a ? await who(x.f) : null; out.push({ id: x.id, g: x.g, t: x.t, m: x.m || '', h: !!x.h, from: f ? f.nick : '', anon: !!x.a }); }
+  return out;
+};
 async function walletRoute(req, res, url) {
   const a = await acct(req, res, true); if (!a) return;
   const own = ownerReq(req), M = req.method;
@@ -933,6 +961,34 @@ async function walletRoute(req, res, url) {
       const id = String(b.id || ''), it = id && DECOR.find(x => x.id === id && x.k === b.slot); if (id && (!it || !(w.inv || []).includes(id))) return json(res, 403, { error: 'Спершу купіть цей предмет' });
       const p = await jget('u:' + a.uid); if (!p) return json(res, 401, { error: 'Спочатку створіть профіль' }); p[slot] = id; await jset('u:' + a.uid, p); whoCache.delete(a.uid);
       return json(res, 200, await decorView(w, own, a.uid));
+    }
+    if (url === '/api/shop/gifts' && M === 'GET') return json(res, 200, { gifts: GIFTS, sell: GIFT_SELL });
+    if (url === '/api/shop/gift' && M === 'POST') {
+      const b = await body(req, res); if (!b) return;
+      const g = GIFTS.find(x => x.id === b.gift); if (!g) return json(res, 400, { error: 'Невідомий подарунок' });
+      let to = a.uid, tn = '';
+      if (b.to) { tn = String(b.to).replace(/^@/, '').trim(); const tu = await kvGet('n:' + tn.toLowerCase()); if (!tu) return json(res, 404, { error: 'Користувача не знайдено' }); to = tu; }
+      if (!own && w.c < g.price) return json(res, 402, { error: 'Не вистачає коінів: потрібно ' + g.price });
+      const m = String(b.msg || '').slice(0, 120), anon = !!b.anon && to !== a.uid;
+      if (!own) w.c -= g.price;
+      const item = { id: crypto.randomBytes(5).toString('hex'), g: g.id, f: a.uid, t: Date.now(), m, a: anon };
+      await withLock('gf:' + to, async () => { const arr = (await jget('gf:' + to)) || []; arr.unshift(item); await jset('gf:' + to, arr.slice(0, 300)); });
+      await save(); stat('gift');
+      if (to !== a.uid) notify(to, 'gift', anon ? null : a.uid, { text: g.e + ' ' + g.n }).catch(() => {});
+      return json(res, 200, Object.assign({ ok: true, to: tn }, walletView(w, own)));
+    }
+    if (url === '/api/gifts/hide' && M === 'POST') {
+      const b = await body(req, res); if (!b) return;
+      return withLock('gf:' + a.uid, async () => { const arr = (await jget('gf:' + a.uid)) || [], x = arr.find(y => y.id === b.id); if (!x) return json(res, 404, { error: 'Подарунок не знайдено' }); x.h = !!b.hide; await jset('gf:' + a.uid, arr); return json(res, 200, { ok: true, gifts: await giftsOut(a.uid, true) }); });
+    }
+    if (url === '/api/gifts/sell' && M === 'POST') {
+      const b = await body(req, res); if (!b) return;
+      return withLock('gf:' + a.uid, async () => {
+        const arr = (await jget('gf:' + a.uid)) || [], i = arr.findIndex(y => y.id === b.id); if (i < 0) return json(res, 404, { error: 'Подарунок не знайдено' });
+        const g = GIFTS.find(z => z.id === arr[i].g); arr.splice(i, 1); await jset('gf:' + a.uid, arr);
+        if (g && !own) w.c += Math.floor(g.price * GIFT_SELL); await save();
+        return json(res, 200, Object.assign({ ok: true, gifts: await giftsOut(a.uid, true) }, walletView(w, own)));
+      });
     }
     if (url === '/api/shop/unlock' && M === 'POST') {
       const p = await jget('u:' + a.uid);
@@ -1144,7 +1200,7 @@ async function userGet(req, res, nick) {
   const me = syncUid(req), bn = await bansSet(), list = [];
   for (const m of (await jget('repos')) || []) if (m.uid === uid && await listedFor(m, me, bn)) list.push(m);
   const fr = (await jget('fr:' + uid)) || [], fw = (await jget('fw:' + uid)) || [];
-  return json(res, 200, { profile: pubProfile(p, false), repos: await Promise.all(list.map(m => repoOut(m, null, null))), me: me === uid, followers: fr.length, following: fw.length, followed: !!me && fr.includes(me), banned: ownerReq(req) ? bn.has(uid) : undefined });
+  return json(res, 200, { gifts: await giftsOut(uid, me === uid), profile: pubProfile(p, false), repos: await Promise.all(list.map(m => repoOut(m, null, null))), me: me === uid, followers: fr.length, following: fw.length, followed: !!me && fr.includes(me), banned: ownerReq(req) ? bn.has(uid) : undefined });
 }
 
 /* стрічка новин */
@@ -1251,7 +1307,7 @@ async function powCheck(p) {
 }
 
 /* сповіщення */
-const NT_TXT = { like: 'вподобав(ла) ваш репозиторій', fork: 'зробив(ла) копію репозиторію', comment: 'прокоментував(ла)', postlike: 'вподобав(ла) ваш допис', follow: 'підписався(лась) на вас', post: 'опублікував(ла) новину', mod: 'Модерація' };
+const NT_TXT = { like: 'вподобав(ла) ваш репозиторій', fork: 'зробив(ла) копію репозиторію', comment: 'прокоментував(ла)', postlike: 'вподобав(ла) ваш допис', follow: 'підписався(лась) на вас', post: 'опублікував(ла) новину', gift: 'подарував(ла) вам подарунок', mod: 'Модерація' };
 async function notify(to, type, fromUid, extra) {
   if (!to || to === fromUid) return;
   try {
@@ -2332,7 +2388,7 @@ const server = http.createServer(async (req, res) => {
     if (maintActive() && url.startsWith('/api/') && !ownerReq(req)) { res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '300', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: maintMsg, maint: true })); }
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url.startsWith('/api/gifts/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
@@ -2355,7 +2411,7 @@ const server = http.createServer(async (req, res) => {
       if (url.startsWith('/api/promo')) return await promoRoute(req, res, url);
       if (url.startsWith('/api/quests')) return await questRoute(req, res, url);
       if (url === '/api/teams' || url.startsWith('/api/team')) return await teamRoute(req, res, url, u);
-      if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/')) return await walletRoute(req, res, url);
+      if (url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url.startsWith('/api/gifts/')) return await walletRoute(req, res, url);
       if (url === '/api/notifications' && M === 'GET') return await ntList(req, res);
       if (url === '/api/notifications/read' && M === 'POST') return await ntRead(req, res);
       if (url === '/api/reports' && M === 'POST') return await reportPost(req, res);

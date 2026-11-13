@@ -913,6 +913,75 @@ async function marketRoute(req, res, url, u) {
   }
   return json(res, 404, { error: 'Не знайдено' });
 }
+/* ---------------- особисті чати ---------------- */
+const DM_KEEP = 600, DM_LEN = 2000, lsMem = new Map();
+const dmKey = (a, b) => 'dm:' + (a < b ? a + ':' + b : b + ':' + a);
+async function dmTouch(uid) { const n = Date.now(), o = lsMem.get(uid) || 0; if (n - o < 20000) return; lsMem.set(uid, n); await jset('ls:' + uid, n).catch(() => {}); }
+async function dmSeenOf(uid) { const m = lsMem.get(uid); if (m) return m; const v = await jget('ls:' + uid); return v || 0; }
+const dmPeer = async (uid, withSeen) => { const p = await who(uid); if (!p) return null; const o = pubProfile(p, false); if (withSeen) { o.ls = await dmSeenOf(uid); o.on = Date.now() - o.ls < 60000; } return o; };
+async function dmRoute(req, res, url) {
+  const a = await acct(req, res, true); if (!a) return;
+  const M = req.method, own = ownerReq(req), path = url.split('?')[0], u = new URL(req.url, 'http://x');
+  dmTouch(a.uid);
+  if (M !== 'GET' && !own && !(await emailOk(a, res))) return;
+  if (path === '/api/dm' && M === 'GET') {
+    const idx = (await jget('di:' + a.uid)) || {}, bn = await bansSet(), out = []; let unread = 0;
+    for (const [pu, r] of Object.entries(idx)) {
+      if (!r.t || r.t <= (r.c || 0) || bn.has(pu)) continue; const pr = await dmPeer(pu, true); if (!pr) continue;
+      out.push({ p: pr, t: r.t, x: r.x || '', f: !!r.f, u: r.u || 0 }); unread += r.u || 0;
+    }
+    out.sort((x, y) => y.t - x.t);
+    return json(res, 200, { chats: out.slice(0, 200), unread });
+  }
+  if (path === '/api/dm/search' && M === 'GET') {
+    const q = (u.searchParams.get('q') || '').toLowerCase().replace(/^@/, '').slice(0, 24); if (q.length < 1) return json(res, 200, { users: [] });
+    const bn = await bansSet(), uids = ((await jget('uidx')) || []).slice(-3000).reverse(), starts = [], inc = [];
+    for (const uid of uids) {
+      if (uid === a.uid || bn.has(uid)) continue; const p = await who(uid); if (!p || !p.nick) continue; const n = p.nick.toLowerCase();
+      if (n.startsWith(q)) starts.push(uid); else if (n.includes(q)) inc.push(uid); if (starts.length >= 15) break;
+    }
+    const out = []; for (const uid of starts.concat(inc).slice(0, 15)) { const pr = await dmPeer(uid, true); if (pr) out.push(pr); }
+    return json(res, 200, { users: out });
+  }
+  const m = path.match(/^\/api\/dm\/([^\/]{1,60})(\/del|\/clear)?$/); if (!m) return json(res, 404, { error: 'Not found' });
+  const nick = decodeURIComponent(m[1]).replace(/^@/, ''), pu = await kvGet('n:' + nick.toLowerCase());
+  if (!pu) return json(res, 404, { error: 'Користувача не знайдено' });
+  if (pu === a.uid) return json(res, 400, { error: 'Не можна писати самому собі' });
+  const bn = await bansSet(); if (bn.has(pu)) return json(res, 403, { error: 'Користувач недоступний' });
+  const key = dmKey(a.uid, pu);
+  if (!m[2] && M === 'GET') {
+    const myIdx = await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = { t: 0 }); if (r.u || !r.r || Date.now() - r.r > 5000) { r.u = 0; r.r = Date.now(); await jset('di:' + a.uid, i); } return i[pu]; });
+    const all = (await jget(key)) || [], pidx = ((await jget('di:' + pu)) || {})[a.uid] || {}, c = myIdx.c || 0;
+    const msgs = all.filter(x => x.t > c).slice(-150).map(x => ({ id: x.id, me: x.f === a.uid, t: x.t, x: x.x }));
+    return json(res, 200, { peer: await dmPeer(pu, true), msgs, pr: pidx.r || 0 });
+  }
+  if (!m[2] && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const text = String(b.text || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, DM_LEN);
+    if (!text) return json(res, 400, { error: 'Порожнє повідомлення' });
+    if (limited(a.uid, 'dmsend', 600)) return json(res, 429, { error: 'Забагато повідомлень. Зачекайте.' });
+    const msg = { id: crypto.randomBytes(5).toString('hex'), f: a.uid, t: Date.now(), x: text };
+    await withLock(key, async () => { const arr = (await jget(key)) || []; arr.push(msg); await jset(key, arr.slice(-DM_KEEP)); });
+    const snip = text.replace(/\s+/g, ' ').slice(0, 80);
+    await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = {}); r.t = msg.t; r.x = snip; r.f = true; r.u = 0; r.r = msg.t; await jset('di:' + a.uid, i); });
+    await withLock('di:' + pu, async () => { const i = (await jget('di:' + pu)) || {}, r = i[a.uid] || (i[a.uid] = {}); r.t = msg.t; r.x = snip; r.f = false; r.u = (r.u || 0) + 1; await jset('di:' + pu, i); });
+    stat('dm');
+    return json(res, 200, { ok: true, msg: { id: msg.id, me: true, t: msg.t, x: msg.x } });
+  }
+  if (m[2] === '/del' && M === 'POST') {
+    const b = await body(req, res); if (!b) return;
+    const ok = await withLock(key, async () => { const arr = (await jget(key)) || [], i = arr.findIndex(x => x.id === b.id && x.f === a.uid); if (i < 0) return false; arr.splice(i, 1); await jset(key, arr); return true; });
+    if (!ok) return json(res, 404, { error: 'Повідомлення не знайдено' });
+    const last = ((await jget(key)) || []).slice(-1)[0];
+    for (const [uid, other] of [[a.uid, pu], [pu, a.uid]]) await withLock('di:' + uid, async () => { const i = (await jget('di:' + uid)) || {}, r = i[other]; if (!r) return; if (last) { r.x = last.x.replace(/\s+/g, ' ').slice(0, 80); r.t = last.t; r.f = last.f === uid; } else { r.x = ''; r.t = Math.max(r.t || 0, r.c || 0); } await jset('di:' + uid, i); });
+    return json(res, 200, { ok: true });
+  }
+  if (m[2] === '/clear' && M === 'POST') {
+    await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = {}); r.c = Date.now(); r.u = 0; await jset('di:' + a.uid, i); });
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 404, { error: 'Not found' });
+}
 const GIFTS = [
   { id: 'g_duck', e: '🦆', n: 'Каченя для дебагу', c: 'dev', price: 40, r: 'c', an: 'bob' },
   { id: 'g_coffee', e: '☕', n: 'Чашка кави', c: 'dev', price: 45, r: 'c', an: 'steam' },
@@ -2389,8 +2458,9 @@ const server = http.createServer(async (req, res) => {
     if (maintActive() && url.startsWith('/api/') && !ownerReq(req)) { res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': '300', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ error: maintMsg, maint: true })); }
     let am;
     if (req.method === 'GET' && (am = url.match(/^\/api\/avatar\/([^/]{1,60})$/))) return await avatarGet(req, res, decodeURIComponent(am[1]));
-    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url.startsWith('/api/gifts/') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
+    if (url === '/api/me' || url.startsWith('/api/me/') || url.startsWith('/api/auth/') || url.startsWith('/api/repos') || url.startsWith('/api/feed') || url.startsWith('/api/users/') || url.startsWith('/api/comments/') || url.startsWith('/api/follow/') || url === '/api/notifications' || url === '/api/notifications/read' || url === '/api/reports' || url === '/api/sites' || url === '/api/pow' || url.startsWith('/api/wallet') || url.startsWith('/api/shop/') || url.startsWith('/api/gifts/') || url.startsWith('/api/dm') || url === '/api/teams' || url.startsWith('/api/team') || url.startsWith('/api/quests') || url.startsWith('/api/promo') || url.startsWith('/api/medals') || url.startsWith('/api/market')) {
       if (!authed()) return json(res, 401, { error: 'Невірний пароль' });
+      if (url.startsWith('/api/dm')) { if (limited(ip, 'dmapi', 4000)) return json(res, 429, { error: 'Забагато запитів' }); return await dmRoute(req, res, url); }
       if (limited(ip, 'social', 1200)) return json(res, 429, { error: 'Забагато запитів' });
       const M = req.method;
       if (url === '/api/me') { if (M === 'GET') return await meGet(req, res); if (M === 'PUT') return await mePut(req, res); }

@@ -919,7 +919,22 @@ const dmKey = (a, b) => 'dm:' + (a < b ? a + ':' + b : b + ':' + a);
 async function dmTouch(uid) { const n = Date.now(), o = lsMem.get(uid) || 0; if (n - o < 20000) return; lsMem.set(uid, n); await jset('ls:' + uid, n).catch(() => {}); }
 async function dmSeenOf(uid) { const m = lsMem.get(uid); if (m) return m; const v = await jget('ls:' + uid); return v || 0; }
 const dmPeer = async (uid, withSeen) => { const p = await who(uid); if (!p) return null; const o = pubProfile(p, false); if (withSeen) { o.ls = await dmSeenOf(uid); o.on = Date.now() - o.ls < 60000; } return o; };
+const DM_IMG = 1572864, DM_GIF = 3145728, DM_VID = 6291456;
+const dmSnip = m => String(m.x || '').replace(/\s+/g, ' ').slice(0, 80);
+async function dmDropMedia(list) { for (const x of list) if (x && x.mid) await kvDel('dmm:' + x.mid); }
 async function dmRoute(req, res, url) {
+  const mm0 = url.split('?')[0].match(/^\/api\/dm\/m\/([a-f0-9]{16})$/);
+  if (mm0 && req.method === 'GET') {
+    const f = await jget('dmm:' + mm0[1]); if (!f) { res.writeHead(404); return res.end(); }
+    const buf = Buffer.from(f.b64, 'base64'), H = { 'Content-Type': f.mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline' };
+    const rg = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (rg && (rg[1] || rg[2])) {
+      let st = rg[1] ? +rg[1] : Math.max(0, buf.length - +rg[2]), en = rg[1] && rg[2] ? Math.min(+rg[2], buf.length - 1) : buf.length - 1;
+      if (st > en || st >= buf.length) { res.writeHead(416, { 'Content-Range': 'bytes */' + buf.length }); return res.end(); }
+      res.writeHead(206, Object.assign(H, { 'Content-Range': 'bytes ' + st + '-' + en + '/' + buf.length, 'Content-Length': en - st + 1 })); return res.end(buf.subarray(st, en + 1));
+    }
+    res.writeHead(200, Object.assign(H, { 'Content-Length': buf.length })); return res.end(buf);
+  }
   const a = await acct(req, res, true); if (!a) return;
   const M = req.method, own = ownerReq(req), path = url.split('?')[0], u = new URL(req.url, 'http://x');
   dmTouch(a.uid);
@@ -928,7 +943,7 @@ async function dmRoute(req, res, url) {
     const idx = (await jget('di:' + a.uid)) || {}, bn = await bansSet(), out = []; let unread = 0;
     for (const [pu, r] of Object.entries(idx)) {
       if (!r.t || r.t <= (r.c || 0) || bn.has(pu)) continue; const pr = await dmPeer(pu, true); if (!pr) continue;
-      out.push({ p: pr, t: r.t, x: r.x || '', f: !!r.f, u: r.u || 0 }); unread += r.u || 0;
+      out.push({ p: pr, t: r.t, x: r.x || '', k: r.k || '', f: !!r.f, u: r.u || 0 }); unread += r.u || 0;
     }
     out.sort((x, y) => y.t - x.t);
     return json(res, 200, { chats: out.slice(0, 200), unread });
@@ -943,7 +958,7 @@ async function dmRoute(req, res, url) {
     const out = []; for (const uid of starts.concat(inc).slice(0, 15)) { const pr = await dmPeer(uid, true); if (pr) out.push(pr); }
     return json(res, 200, { users: out });
   }
-  const m = path.match(/^\/api\/dm\/([^\/]{1,60})(\/del|\/clear)?$/); if (!m) return json(res, 404, { error: 'Not found' });
+  const m = path.match(/^\/api\/dm\/([^\/]{1,60})(\/del|\/clear|\/edit)?$/); if (!m) return json(res, 404, { error: 'Not found' });
   const nick = decodeURIComponent(m[1]).replace(/^@/, ''), pu = await kvGet('n:' + nick.toLowerCase());
   if (!pu) return json(res, 404, { error: 'Користувача не знайдено' });
   if (pu === a.uid) return json(res, 400, { error: 'Не можна писати самому собі' });
@@ -952,28 +967,46 @@ async function dmRoute(req, res, url) {
   if (!m[2] && M === 'GET') {
     const myIdx = await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = { t: 0 }); if (r.u || !r.r || Date.now() - r.r > 5000) { r.u = 0; r.r = Date.now(); await jset('di:' + a.uid, i); } return i[pu]; });
     const all = (await jget(key)) || [], pidx = ((await jget('di:' + pu)) || {})[a.uid] || {}, c = myIdx.c || 0;
-    const msgs = all.filter(x => x.t > c).slice(-150).map(x => ({ id: x.id, me: x.f === a.uid, t: x.t, x: x.x }));
+    const msgs = all.filter(x => x.t > c).slice(-150).map(x => ({ id: x.id, me: x.f === a.uid, t: x.t, x: x.x, k: x.k || '', m: x.mid ? '/api/dm/m/' + x.mid : '', e: x.e || 0 }));
     return json(res, 200, { peer: await dmPeer(pu, true), msgs, pr: pidx.r || 0 });
   }
   if (!m[2] && M === 'POST') {
+    const b = await body(req, res, 9 * 1024 * 1024); if (!b) return;
+    const text = String(b.text || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, DM_LEN);
+    let mid = '', kind = '', mf = null;
+    if (b.media) {
+      const mm = /^data:((?:image\/(?:gif|jpeg|png|webp))|(?:video\/(?:mp4|webm)));base64,([A-Za-z0-9+/=]+)$/.exec(String(b.media));
+      if (!mm) return json(res, 400, { error: 'Підтримуються фото, GIF і відео (mp4/webm)' });
+      const bytes = Buffer.byteLength(mm[2], 'base64'), vid = mm[1].startsWith('video/'), gif = mm[1] === 'image/gif';
+      if (bytes > (vid ? DM_VID : gif ? DM_GIF : DM_IMG)) return json(res, 400, { error: vid ? 'Відео завелике (макс. 6 МБ)' : 'Зображення завелике' });
+      if (limited(a.uid, 'dmmedia', 80)) return json(res, 429, { error: 'Забагато файлів. Зачекайте.' });
+      kind = vid ? 'video' : gif ? 'gif' : 'img'; mid = crypto.randomBytes(8).toString('hex'); mf = { mime: mm[1], b64: mm[2] };
+    }
+    if (!text && !mf) return json(res, 400, { error: 'Порожнє повідомлення' });
+    if (limited(a.uid, 'dmsend', 600)) return json(res, 429, { error: 'Забагато повідомлень. Зачекайте.' });
+    const msg = { id: crypto.randomBytes(5).toString('hex'), f: a.uid, t: Date.now(), x: text }; if (mf) { msg.k = kind; msg.mid = mid; await jset('dmm:' + mid, mf); }
+    await withLock(key, async () => { const arr = (await jget(key)) || []; arr.push(msg); const cut = arr.length > DM_KEEP ? arr.splice(0, arr.length - DM_KEEP) : []; await jset(key, arr); await dmDropMedia(cut); });
+    const snip = dmSnip(msg);
+    await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = {}); r.t = msg.t; r.x = snip; r.k = msg.k || ''; r.f = true; r.u = 0; r.r = msg.t; await jset('di:' + a.uid, i); });
+    await withLock('di:' + pu, async () => { const i = (await jget('di:' + pu)) || {}, r = i[a.uid] || (i[a.uid] = {}); r.t = msg.t; r.x = snip; r.k = msg.k || ''; r.f = false; r.u = (r.u || 0) + 1; await jset('di:' + pu, i); });
+    stat('dm');
+    return json(res, 200, { ok: true, msg: { id: msg.id, me: true, t: msg.t, x: msg.x, k: msg.k || '', m: msg.mid ? '/api/dm/m/' + msg.mid : '' } });
+  }
+  if (m[2] === '/edit' && M === 'POST') {
     const b = await body(req, res); if (!b) return;
     const text = String(b.text || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, DM_LEN);
-    if (!text) return json(res, 400, { error: 'Порожнє повідомлення' });
-    if (limited(a.uid, 'dmsend', 600)) return json(res, 429, { error: 'Забагато повідомлень. Зачекайте.' });
-    const msg = { id: crypto.randomBytes(5).toString('hex'), f: a.uid, t: Date.now(), x: text };
-    await withLock(key, async () => { const arr = (await jget(key)) || []; arr.push(msg); await jset(key, arr.slice(-DM_KEEP)); });
-    const snip = text.replace(/\s+/g, ' ').slice(0, 80);
-    await withLock('di:' + a.uid, async () => { const i = (await jget('di:' + a.uid)) || {}, r = i[pu] || (i[pu] = {}); r.t = msg.t; r.x = snip; r.f = true; r.u = 0; r.r = msg.t; await jset('di:' + a.uid, i); });
-    await withLock('di:' + pu, async () => { const i = (await jget('di:' + pu)) || {}, r = i[a.uid] || (i[a.uid] = {}); r.t = msg.t; r.x = snip; r.f = false; r.u = (r.u || 0) + 1; await jset('di:' + pu, i); });
-    stat('dm');
-    return json(res, 200, { ok: true, msg: { id: msg.id, me: true, t: msg.t, x: msg.x } });
+    const r = await withLock(key, async () => { const arr = (await jget(key)) || [], x = arr.find(y => y.id === b.id && y.f === a.uid); if (!x) return null; if (!text && !x.mid) return false; if (x.x === text) return x; x.x = text; x.e = Date.now(); await jset(key, arr); return x; });
+    if (r === null) return json(res, 404, { error: 'Повідомлення не знайдено' }); if (r === false) return json(res, 400, { error: 'Порожнє повідомлення' });
+    const last = ((await jget(key)) || []).slice(-1)[0];
+    if (last && last.id === r.id) for (const uid of [a.uid, pu]) await withLock('di:' + uid, async () => { const i = (await jget('di:' + uid)) || {}, q = i[uid === a.uid ? pu : a.uid]; if (!q) return; q.x = dmSnip(r); await jset('di:' + uid, i); });
+    return json(res, 200, { ok: true });
   }
   if (m[2] === '/del' && M === 'POST') {
     const b = await body(req, res); if (!b) return;
-    const ok = await withLock(key, async () => { const arr = (await jget(key)) || [], i = arr.findIndex(x => x.id === b.id && x.f === a.uid); if (i < 0) return false; arr.splice(i, 1); await jset(key, arr); return true; });
+    const ok = await withLock(key, async () => { const arr = (await jget(key)) || [], i = arr.findIndex(x => x.id === b.id && x.f === a.uid); if (i < 0) return false; const [gone] = arr.splice(i, 1); await jset(key, arr); await dmDropMedia([gone]); return true; });
     if (!ok) return json(res, 404, { error: 'Повідомлення не знайдено' });
     const last = ((await jget(key)) || []).slice(-1)[0];
-    for (const [uid, other] of [[a.uid, pu], [pu, a.uid]]) await withLock('di:' + uid, async () => { const i = (await jget('di:' + uid)) || {}, r = i[other]; if (!r) return; if (last) { r.x = last.x.replace(/\s+/g, ' ').slice(0, 80); r.t = last.t; r.f = last.f === uid; } else { r.x = ''; r.t = Math.max(r.t || 0, r.c || 0); } await jset('di:' + uid, i); });
+    for (const [uid, other] of [[a.uid, pu], [pu, a.uid]]) await withLock('di:' + uid, async () => { const i = (await jget('di:' + uid)) || {}, r = i[other]; if (!r) return; if (last) { r.x = dmSnip(last); r.k = last.k || ''; r.t = last.t; r.f = last.f === uid; } else { r.x = ''; r.k = ''; r.t = Math.max(r.t || 0, r.c || 0); } await jset('di:' + uid, i); });
     return json(res, 200, { ok: true });
   }
   if (m[2] === '/clear' && M === 'POST') {
